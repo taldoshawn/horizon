@@ -196,7 +196,7 @@ impl ChatTrust {
 }
 
 /// Streaming needs a generator; a server world never generates.
-struct NoTerrain;
+pub(super) struct NoTerrain;
 impl ChunkGenerator for NoTerrain {
     type Worker = ();
     fn worker(&self) {}
