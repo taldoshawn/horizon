@@ -15,6 +15,7 @@ pub mod plugin;
 pub mod world;
 pub mod state;
 pub mod physics;
+pub mod superflat;
 
 use std::time::Duration;
 
