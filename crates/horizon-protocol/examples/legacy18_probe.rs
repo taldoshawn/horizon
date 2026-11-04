@@ -21,8 +21,7 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
     conn.reader.set_read_timeout(Some(Duration::from_secs(40)))?;
     eprintln!("Connected via protocol 47: {username} UUID {uuid}");
     eprintln!("HEADLESS diagnostic only: gameplay renderer, native 1.8 server and Forge mods are absent.");
-    conn.send(&play::client_settings_body("en_US",8,0x7f)?)?;
-    conn.send(&plugin::client_brand_body("horizon-rust")?)?;
+    // Vanilla 1.8 sends ClientSettings/Brand only *after* JoinGame (S01).
     let mut game=LegacyGame::default();
     let mut seen=[0u32;11];
     for _ in 0..512 {
@@ -48,6 +47,8 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
         seen[index]+=1;
         match kind {
             UpdateKind::Joined=>{
+                conn.send(&play::client_settings_body("en_US",8,0x7f)?)?;
+                conn.send(&plugin::client_brand_body("horizon-rust")?)?;
                 let join=game.join.as_ref().expect("join processed");
                 println!("Joined: entity {}, dimension {}, gamemode {}",
                     join.entity_id,join.dimension,join.game_mode);
