@@ -87,13 +87,13 @@ pub enum RuntimeMode {
     Native26_3,
     Legacy1_8_9ViaProxy,
     /// Pre-release Rust protocol-47 runtime; not a complete game.
-    Native1_8_9Dev,
+    Native1_8_9Experimental,
 }
 impl RuntimeMode {
     pub fn next(self) -> Self {
         match self {
-            Self::Native26_3 => Self::Native1_8_9Dev,
-            Self::Native1_8_9Dev => Self::Legacy1_8_9ViaProxy,
+            Self::Native26_3 => Self::Native1_8_9Experimental,
+            Self::Native1_8_9Experimental => Self::Legacy1_8_9ViaProxy,
             Self::Legacy1_8_9ViaProxy => Self::Native26_3,
         }
     }
@@ -101,7 +101,7 @@ impl RuntimeMode {
         match self {
             Self::Native26_3 => "Minecraft 26.3 - native Rust",
             Self::Legacy1_8_9ViaProxy => "Minecraft 1.8.9 server - ViaProxy",
-            Self::Native1_8_9Dev => "Minecraft 1.8.9 native Rust - EXPERIMENTAL",
+            Self::Native1_8_9Experimental => "Minecraft 1.8.9 native Rust - EXPERIMENTAL",
         }
     }
 }
