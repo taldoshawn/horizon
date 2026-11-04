@@ -179,13 +179,13 @@ mod tests {
         let server=thread::spawn(move||{
             let (socket,_)=listener.accept().unwrap();
             let mut conn=Connection::from_stream(socket).unwrap();
-            let (settings,_)=conn.recv().unwrap();
-            let (brand,_)=conn.recv().unwrap();
-            assert_eq!((settings,brand),(0x15,0x17));
             let mut join=Writer::new();
             join.varint(1);join.i32(11);join.u8(0);join.i8(0);
             join.u8(2);join.u8(20);join.string("default");join.bool(false);
             conn.send(&join.data).unwrap();
+            let (settings,_)=conn.recv().unwrap();
+            let (brand,_)=conn.recv().unwrap();
+            assert_eq!((settings,brand),(0x15,0x17));
 
             let mut data=vec![0u8;8192+2048+2048+256];
             data[0]=16;data[8192+2048..8192+2048+2048].fill(255);
