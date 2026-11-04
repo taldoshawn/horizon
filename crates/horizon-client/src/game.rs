@@ -451,6 +451,8 @@ struct Options {
     window_size: [u32; 2],
     /// Multiplayer: `--server HOST[:PORT]` joins at start; `--name` is the offline player name.
     server: Option<String>,
+    /// Opt-in development path, not a public 1.8.9 compatibility guarantee.
+    native_189: bool,
     /// `--name`, `HORIZON_PLAYER_NAME` or the signed-in account's name; else
     /// [`Options::player_name`] uses the kept offline name.
     player_name: Option<String>,
@@ -607,6 +609,7 @@ impl Options {
                 .ok()
                 .and_then(|v| v.parse().ok()),
             server: None,
+            native_189: false,
             player_name: std::env::var("HORIZON_PLAYER_NAME")
                 .ok()
                 .filter(|n| !n.is_empty()),
@@ -648,6 +651,7 @@ impl Options {
                     break;
                 }
                 "--creative" => o.creative = true,
+                "--native-189-experimental" => o.native_189 = true,
                 "--test-terrain" => o.test_terrain = true,
                 "--no-pause" => o.no_pause = true,
                 "--offscreen" => o.offscreen = true,
