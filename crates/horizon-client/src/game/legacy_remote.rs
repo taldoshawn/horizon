@@ -206,6 +206,21 @@ impl Game<'_> {
                         self.previous_eye=1.62;
                     }
                 }
+                if packet.kind==UpdateKind::Chat {
+                    if let Some(chat)=legacy.state.last_chat.as_ref() {
+                        let data=serde_json::from_str::<serde_json::Value>(&chat.json)
+                            .unwrap_or_else(|_|serde_json::json!({"text":chat.json}));
+                        let message=horizon_client::scoreboard::comp_text(&data).resolve_legacy();
+                        let source=horizon_client::chat::ChatSource::Server;
+                        if self.ui.chat.shows(source) {
+                            self.ui.chat.add(
+                                &self.gui.atlas,message,
+                                Some(horizon_client::chat::SYSTEM_INDICATOR),
+                                source,self.ticks,self.screen==Screen::Chat,
+                            );
+                        }
+                    }
+                }
                 let mut sink=NativeChunkSink {
                     world:&mut self.world,streaming:&mut self.streaming,
                 };
