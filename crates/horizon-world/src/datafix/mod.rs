@@ -48,6 +48,17 @@ pub fn legacy_block_state_tag(state: u16) -> Option<Tag> {
     (state < 4096).then(|| block_state_data::get_tag(i32::from(state)))
 }
 
+/// The original numeric legacy ItemIdFix mapping, used to draw native 1.8
+/// network inventory slots. Pre-flattened item damage and NBT still require
+/// separate version-specific translation; do not send these names as wire IDs.
+pub fn legacy_item_name(id:i16)->Option<&'static str> {
+    if id<0{return None;}
+    flat_tables::ITEM_IDS.iter()
+        .find(|(old,_)|*old==i32::from(id))
+        .map(|(_,name)|*name)
+}
+
+
 
 /// `Identifier.tryParse` validity, as `NamespacedSchema.ensureNamespaced` uses it.
 pub fn identifier(id: &str) -> Option<(String, String)> {
