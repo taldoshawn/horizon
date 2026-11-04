@@ -12,6 +12,7 @@
 pub mod play;
 pub mod inventory;
 pub mod plugin;
+pub mod world;
 
 use std::time::Duration;
 
