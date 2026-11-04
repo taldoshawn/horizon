@@ -248,6 +248,7 @@ mod quick_actions;
 mod raids;
 mod recipe_book;
 mod remote;
+mod legacy_remote;
 mod remote_camera;
 mod remote_chat;
 mod remote_chunks;
@@ -2675,6 +2676,7 @@ struct Game<'a> {
     persist: persist::EntityMemory,
     /// Connected to a server: the world comes from the network (game/remote.rs).
     remote: Option<remote::Remote>,
+    legacy_remote: Option<legacy_remote::NativeLegacy>,
     /// This world is open to the network (game/lan.rs).
     lan: Option<lan::LanHost>,
     /// Single player's server thread, which `remote` is connected to.
@@ -6821,6 +6823,10 @@ impl Game<'_> {
         }
         if self.remote.is_some() {
             self.tick_remote()?;
+            return Ok(());
+        }
+        if self.legacy_remote.is_some() {
+            self.tick_native_189()?;
             return Ok(());
         }
         // LevelLoadingScreen.tick.
@@ -15728,6 +15734,11 @@ impl Game<'_> {
         if let Err(e) = self.poll_remote() {
             log::warn!("Horizon: {e}");
         }
+        if let Err(error) = self.poll_native_189() {
+            log::warn!("Horizon: native Minecraft 1.8.9: {error}");
+            self.legacy_remote = None;
+            let _ = self.leave_server(Some(error.to_string()));
+        }
         self.prepare_lod();
         if self.lod.is_some() {
             for &((x, _, z), _, _) in &self.world.light_edits {
@@ -18294,6 +18305,7 @@ impl<'a> Game<'a> {
             water_plane_scan: Default::default(),
             persist: Default::default(),
             remote: None,
+            legacy_remote: None,
             lan: None,
             integrated: None,
             level_shapes: Default::default(),
