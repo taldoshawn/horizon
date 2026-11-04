@@ -653,7 +653,17 @@ impl Game<'_> {
     }
     pub(super) fn tick_native_189(&mut self)->Result<()> {
         self.ticks=self.ticks.saturating_add(1);
+        self.ui.chat.tick(&self.gui.atlas,self.ticks);
+        let clicks=std::mem::take(&mut self.attack_clicks).min(4);
+        let uses=std::mem::take(&mut self.use_clicks).min(4);
         let playing=self.screen==Screen::Playing && !self.dialog_open();
+        if playing && self.player.is_some() {
+            for _ in 0..clicks {self.native_189_attack();}
+            for _ in 0..uses {
+                let hit=self.pick();
+                self.native_189_use_hand(hit.as_ref())?;
+            }
+        }
         let stick=self.pad_move();
         let held=|key|playing && self.keys.contains(&key);
         let keys=Keys {
