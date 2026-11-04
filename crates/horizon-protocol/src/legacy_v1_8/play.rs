@@ -185,6 +185,11 @@ pub fn decode_chunk_data(payload: &[u8], has_sky_light: bool) -> Result<ChunkDat
     let len = r.count(MAX_CHUNK_BYTES)?;
     let bytes = r.bytes(len)?;
     ensure_consumed(&r, "chunk data")?;
+    // Vanilla 1.8 unloads a chunk with full=true, mask=0 and a zero-size
+    // data array. The normal fully-empty column has 256 biome bytes instead.
+    if full && bitmask == 0 && bytes.is_empty() {
+        return Ok(ChunkData { x, z, full, sections: vec![], biomes: None });
+    }
     chunk_sections(x, z, full, bitmask, bytes, has_sky_light)
 }
 
@@ -547,6 +552,16 @@ mod tests {
         corrupted.pop();
         assert!(decode_chunk_data(&corrupted, true).is_err());
         assert!(decode_chunk_data(&packet.data, false).is_err());
+    }
+
+    #[test]
+    fn zero_length_chunk_unload_uses_protocol_47_sentinel() {
+        let mut w=Writer::new();
+        w.i32(-3);w.i32(4);w.bool(true);w.u16(0);w.byte_array(&[]);
+        let chunk=decode_chunk_data(&w.data,true).unwrap();
+        assert_eq!((chunk.x,chunk.z),(-3,4));
+        assert!(chunk.sections.is_empty());
+        assert!(chunk.biomes.is_none());
     }
 
     #[test]
