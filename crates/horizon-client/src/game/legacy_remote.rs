@@ -58,15 +58,24 @@ fn old_tool_speed(item:Option<i16>,block:u16)->f32 {
         91|96|99|100|107|125|126|134|135|136|143|146|162|163|
         164|170|180|181|182);
     let shovel=matches!(block,2|3|12|13|60|78|80|82|88|110|159|172|208);
-    match item {
-        Some(270) if pick|Some(271) if axe|Some(269) if shovel=>2.0,
-        Some(274) if pick|Some(275) if axe|Some(273) if shovel=>4.0,
-        Some(257) if pick|Some(258) if axe|Some(256) if shovel=>6.0,
-        Some(278) if pick|Some(279) if axe|Some(277) if shovel=>8.0,
-        Some(285) if pick|Some(286) if axe|Some(284) if shovel=>12.0,
-        Some(359) if matches!(block,18|31|35|106|161|175)=>15.0, // Shears
-        _=>1.0,
-    }
+    let compatible=match item {
+        Some(270|274|257|278|285) => pick,
+        Some(271|275|258|279|286) => axe,
+        Some(269|273|256|277|284) => shovel,
+        _ => false,
+    };
+    if compatible {
+        match item {
+            Some(270|271|269)=>2.0,
+            Some(274|275|273)=>4.0,
+            Some(257|258|256)=>6.0,
+            Some(278|279|277)=>8.0,
+            Some(285|286|284)=>12.0,
+            _=>1.0,
+        }
+    } else if item==Some(359)&&matches!(block,18|31|35|106|161|175) {
+        15.0
+    } else {1.0}
 }
 
 pub(super) struct NativeLegacy {
