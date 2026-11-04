@@ -89,13 +89,6 @@ fn old_item_visual_name(id:i16,damage:i16)->Option<String> {
         1=>["stone","granite","polished_granite","diorite",
             "polished_diorite","andesite","polished_andesite"].get(metadata).copied(),
         3=>["dirt","coarse_dirt","podzol"].get(metadata).copied(),
-        5|6=>{
-            ["oak","spruce","birch","jungle","acacia","dark_oak"].get(metadata)
-                .map(|wood|if id==5{format!("{wood}_planks")}else{format!("{wood}_sapling")})
-                .as_deref().map(str::to_owned)
-                .map(|_|"") // handled below without a dangling temporary
-                .filter(|_|false)
-        },
         35=>["white_wool","orange_wool","magenta_wool","light_blue_wool",
             "yellow_wool","lime_wool","pink_wool","gray_wool","light_gray_wool",
             "cyan_wool","purple_wool","blue_wool","brown_wool","green_wool",
