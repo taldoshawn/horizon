@@ -326,6 +326,53 @@ pub fn decode_entity_relative_move(payload: &[u8]) -> Result<EntityRelativeMove>
 }
 
 
+/// Clientbound 0x16 — rotation only. Angle is byte/256 of a turn.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EntityLook {
+    pub entity_id:i32,pub yaw:f32,pub pitch:f32,pub on_ground:bool,
+}
+pub fn decode_entity_look(payload:&[u8])->Result<EntityLook>{
+    let mut r=Reader::new(payload);
+    let result=EntityLook{
+        entity_id:r.varint()?,
+        yaw:f32::from(r.u8()?)*(360.0/256.0),
+        pitch:f32::from(r.u8()?)*(360.0/256.0),
+        on_ground:r.bool()?,
+    };
+    ensure_consumed(&r,"entity look")?;
+    Ok(result)
+}
+/// Clientbound 0x17 — relative movement with yaw/pitch and ground flag.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EntityLookMove {
+    pub entity_id:i32,pub dx:f64,pub dy:f64,pub dz:f64,
+    pub yaw:f32,pub pitch:f32,pub on_ground:bool,
+}
+pub fn decode_entity_look_move(payload:&[u8])->Result<EntityLookMove>{
+    let mut r=Reader::new(payload);
+    let result=EntityLookMove{
+        entity_id:r.varint()?,
+        dx:f64::from(r.i8()?)/32.0,dy:f64::from(r.i8()?)/32.0,
+        dz:f64::from(r.i8()?)/32.0,
+        yaw:f32::from(r.u8()?)*(360.0/256.0),
+        pitch:f32::from(r.u8()?)*(360.0/256.0),
+        on_ground:r.bool()?,
+    };
+    ensure_consumed(&r,"entity look and move")?;
+    Ok(result)
+}
+/// Clientbound 0x19 — head yaw independent of body yaw.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EntityHeadLook {pub entity_id:i32,pub yaw:f32}
+pub fn decode_entity_head_look(payload:&[u8])->Result<EntityHeadLook>{
+    let mut r=Reader::new(payload);
+    let result=EntityHeadLook{
+        entity_id:r.varint()?,yaw:f32::from(r.u8()?)*(360.0/256.0),
+    };
+    ensure_consumed(&r,"entity head look")?;
+    Ok(result)
+}
+
 /// Signed x/z and 12-bit Y, packed as (x:26, z:26, y:12).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockPosition {
@@ -689,6 +736,27 @@ mod tests {
         assert_eq!(changes[0].position, BlockPosition { x: -29, y: 64, z: 69 });
         assert_eq!(changes[1].position, BlockPosition { x: -32, y: 70, z: 79 });
         assert!(decode_multi_block_change(&bulk.data[..bulk.data.len()-1]).is_err());
+    }
+
+    #[test]
+    fn old_entity_rotations_decode_full_movement_and_reject_trailing_bytes() {
+        let mut look=Writer::new();
+        look.varint(123);look.u8(64);look.u8(192);look.bool(true);
+        let l=decode_entity_look(&look.data).unwrap();
+        assert_eq!((l.entity_id,l.yaw,l.pitch,l.on_ground),(123,90.0,270.0,true));
+        look.u8(0);assert!(decode_entity_look(&look.data).is_err());
+
+        let mut move_and_look=Writer::new();
+        move_and_look.varint(123);move_and_look.i8(-32);
+        move_and_look.i8(8);move_and_look.i8(16);
+        move_and_look.u8(128);move_and_look.u8(0);move_and_look.bool(false);
+        let m=decode_entity_look_move(&move_and_look.data).unwrap();
+        assert_eq!((m.dx,m.dy,m.dz),(-1.0,0.25,0.5));
+        assert_eq!((m.yaw,m.pitch,m.on_ground),(180.0,0.0,false));
+
+        let mut head=Writer::new();head.varint(123);head.u8(32);
+        assert_eq!(decode_entity_head_look(&head.data).unwrap().yaw,45.0);
+        assert!(decode_entity_head_look(&head.data[..1]).is_err());
     }
 
     #[test]
