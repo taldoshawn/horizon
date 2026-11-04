@@ -234,8 +234,13 @@ mod tests {
         let server=thread::spawn(move||{
             let (socket,_)=listener.accept().unwrap();
             let mut connection=Connection::from_stream(socket).unwrap();
-            connection.recv().unwrap(); // 1.8 client settings
-            connection.recv().unwrap(); // MC|Brand
+            let mut join=Writer::new();
+            join.varint(1);join.i32(55);join.u8(0);join.i8(0);
+            join.u8(2);join.u8(20);join.string("default");join.bool(false);
+            connection.send(&join.data).unwrap();
+            let (settings,_) = connection.recv().unwrap();
+            let (brand,_) = connection.recv().unwrap();
+            assert_eq!((settings,brand),(0x15,0x17));
             let mut disconnect=Writer::new();
             disconnect.varint(0x40);
             disconnect.string(r#"{"text":"Server closed"}"#);
@@ -246,6 +251,7 @@ mod tests {
         let mut client=LegacySession::from_logged_in_connection(
             connection,"Steve".into(),"test-uuid".into()
         ).unwrap();
+        assert_eq!(client.receive_one().unwrap(),UpdateKind::Joined);
         let error=client.receive_one().unwrap_err();
         assert!(error.to_string().contains("Server closed"));
         server.join().unwrap();
@@ -258,15 +264,15 @@ mod tests {
         let server=thread::spawn(move|| {
             let (socket,_)=listener.accept().unwrap();
             let mut c=Connection::from_stream(socket).unwrap();
-            // Initial settings and brand are sent by LegacySession itself.
-            let (settings,_) = c.recv().unwrap();
-            let (brand,_) = c.recv().unwrap();
-            assert_eq!((settings,brand),(0x15,0x17));
+            // The client waits for the S01 JoinGame before sending C15/Brand.
             let mut join=Writer::new();
             join.i32(55);join.u8(0);join.i8(0);join.u8(2);
             join.u8(20);join.string("default");join.bool(false);
             let mut packet=Writer::new();packet.varint(1);packet.bytes(&join.data);
             c.send(&packet.data).unwrap();
+            let (settings,_) = c.recv().unwrap();
+            let (brand,_) = c.recv().unwrap();
+            assert_eq!((settings,brand),(0x15,0x17));
 
             let mut position=Writer::new();
             position.varint(8);
