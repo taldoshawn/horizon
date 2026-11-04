@@ -313,7 +313,7 @@ mod tests {
         update.varint(1 << 4);
         world.apply(0x23,&update.data).unwrap();
         assert_eq!(world.block(-30,3,148),Some((1,0)));
-        assert_eq!(world.block(-17,3,148),None);
+        assert_eq!(world.block(-17,3,148),Some((0,0)));
         assert_eq!(world.block(-30,-1,148),None);
     }
     #[test]
