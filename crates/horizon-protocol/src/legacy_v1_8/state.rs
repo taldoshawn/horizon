@@ -87,6 +87,9 @@ pub struct InventoryWindow {
 pub enum UpdateKind {
     Joined,
     PlayerCorrected,
+    Respawn,
+    Health,
+    Hotbar,
     Chunk,
     ChunkBulk,
     Block,
@@ -112,6 +115,8 @@ pub struct LegacyGame {
     pub join:Option<play::JoinGame>,
     pub player:play::PositionLook,
     pub on_ground:bool,
+    pub health:play::UpdateHealth,
+    pub selected_slot:u8,
     pub columns:HashMap<(i32,i32),Column>,
     pub entities:HashMap<i32,TrackedEntity>,
     pub windows:HashMap<u8,InventoryWindow>,
@@ -126,6 +131,8 @@ impl Default for LegacyGame {
         join:None,
         player:play::PositionLook{x:0.0,y:64.0,z:0.0,yaw:0.0,pitch:0.0,flags:0},
         on_ground:false,
+        health:play::UpdateHealth{health:20.0,food:20,saturation:5.0},
+        selected_slot:0,
         columns:HashMap::new(),entities:HashMap::new(),windows:HashMap::new(),
         cursor:None,last_chat:None,plugin_channels:Vec::new(),forge_required:false,
     }}
@@ -190,6 +197,26 @@ impl LegacyGame {
                 self.entities.clear();self.columns.clear();self.windows.clear();
                 self.cursor=None;
                 UpdateKind::Joined
+            },
+            0x06 => {
+                self.health=play::decode_update_health(payload)?;
+                UpdateKind::Health
+            },
+            0x07 => {
+                let next=play::decode_respawn(payload)?;
+                if let Some(join)=self.join.as_mut() {
+                    join.dimension=next.dimension as i8;
+                    join.difficulty=next.difficulty;
+                    join.game_mode=next.game_mode;
+                    join.world_type=next.world_type;
+                }
+                self.entities.clear();self.columns.clear();self.windows.clear();
+                self.cursor=None;
+                UpdateKind::Respawn
+            },
+            0x09 => {
+                self.selected_slot=play::decode_held_item_change(payload)?;
+                UpdateKind::Hotbar
             },
             0x08 => {
                 let correction=play::decode_position_look(payload)?;
@@ -370,6 +397,28 @@ mod tests {
         let keep=state.apply(0,&[0x2c]).unwrap();
         assert_eq!(keep.replies[0],[0,0x2c]);
     }
+    #[test]
+    fn respawn_health_hotbar_are_server_authoritative() {
+        let mut game=LegacyGame::default();
+        let mut join=Writer::new();
+        join.i32(7);join.u8(0);join.i8(0);join.u8(2);join.u8(20);
+        join.string("default");join.bool(false);
+        game.apply(1,&join.data).unwrap();
+        let mut hp=Writer::new();
+        hp.f32(6.5);hp.varint(11);hp.f32(1.5);
+        assert_eq!(game.apply(6,&hp.data).unwrap().kind,UpdateKind::Health);
+        assert_eq!(game.health.health,6.5);
+        assert_eq!(game.apply(9,&[4]).unwrap().kind,UpdateKind::Hotbar);
+        assert_eq!(game.selected_slot,4);
+        let mut respawn=Writer::new();
+        respawn.i32(-1);respawn.u8(3);respawn.u8(1);
+        respawn.string("default");
+        assert_eq!(game.apply(7,&respawn.data).unwrap().kind,UpdateKind::Respawn);
+        assert_eq!(game.join.as_ref().unwrap().dimension,-1);
+        assert_eq!(game.join.as_ref().unwrap().game_mode,1);
+        assert!(game.columns.is_empty());
+    }
+
     #[test]
     fn entity_look_move_and_head_yaw_update_tracked_state() {
         let mut world=LegacyGame::default();
