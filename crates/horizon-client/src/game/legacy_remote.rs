@@ -282,6 +282,61 @@ impl Game<'_> {
     }
     /// Tick only protocol-47 inputs when in 1.8 mode. Never run 26.3 world
     /// simulation or autosave for these worlds.
+    /// User-triggered attack from the native touch/mouse button. Entity
+    /// targeting is only an *assist*; protocol-47 server validates the hit,
+    /// knockback and actual target. Never modify remote entity HP locally.
+    pub(super) fn native_189_attack(&mut self)->bool {
+        let Some(legacy)=self.legacy_remote.as_mut() else{return false};
+        let Some(worker)=legacy.worker.as_ref() else{return false};
+        if let Err(error)=worker.send_action(ClientAction::SwingArm) {
+            log::warn!("1.8 swing: {error}");
+            return false;
+        }
+        let Some(local_player)=self.player.as_ref() else{return true};
+        let eye=[
+            local_player.position.x,
+            local_player.position.y+1.62,
+            local_player.position.z
+        ];
+        let dir=self.interaction_direction();
+        let mut best=None::<(i32,f64)>;
+        for (id,entity) in &legacy.state.entities {
+            if legacy.state.join.as_ref().is_some_and(|j|j.entity_id==*id) {
+                continue;
+            }
+            let half=0.3;
+            let min=[entity.x-half,entity.y,entity.z-half];
+            let max=[entity.x+half,entity.y+1.8,entity.z+half];
+            let mut near=0.0f64;
+            let mut far=3.0f64;
+            for axis in 0..3 {
+                if dir[axis].abs()<1e-8 {
+                    if eye[axis]<min[axis]||eye[axis]>max[axis] {
+                        far=-1.0;break;
+                    }
+                }else{
+                    let a=(min[axis]-eye[axis])/dir[axis];
+                    let b=(max[axis]-eye[axis])/dir[axis];
+                    near=near.max(a.min(b));
+                    far=far.min(a.max(b));
+                }
+            }
+            if far>=near && far>=0.0
+                && best.is_none_or(|(_,d)|near<d) {
+                best=Some((*id,near));
+            }
+        }
+        if let Some((entity_id,distance))=best
+            && self.before_block(distance)
+        {
+            if let Err(error)=worker.send_action(ClientAction::Attack(entity_id)) {
+                log::warn!("1.8 attack: {error}");
+            }
+            legacy.motion.sprinting=false;
+        }
+        true
+    }
+
     pub(super) fn native_send_chat(&self,line:&str)->Result<()> {
         if let Some(worker)=self.legacy_remote.as_ref().and_then(|l|l.worker.as_ref()) {
             worker.send_action(ClientAction::Chat(line))?;
