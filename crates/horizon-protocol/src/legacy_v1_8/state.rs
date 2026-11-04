@@ -5,7 +5,7 @@
 //! simulation must consume this model before the Android client is playable.
 use std::collections::HashMap;
 use crate::{Error, Result};
-use super::{keep_alive_id, keep_alive_response_body, inventory, play, plugin};
+use super::{keep_alive_id, keep_alive_response_body, inventory, play, plugin, spawn};
 
 const MAX_COLUMNS: usize = 1024;
 const MAX_ENTITIES: usize = 16_384;
@@ -67,6 +67,7 @@ impl Column {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TrackedEntity {
     pub id:i32,
+    pub kind:Option<spawn::EntityKind>,
     pub x:f64,pub y:f64,pub z:f64,
     pub yaw:f32,pub pitch:f32,
     pub vx:f64,pub vy:f64,pub vz:f64,
@@ -74,7 +75,7 @@ pub struct TrackedEntity {
 }
 impl TrackedEntity {
     fn new(id:i32)->Self {
-        Self{id,x:0.0,y:0.0,z:0.0,yaw:0.0,pitch:0.0,vx:0.0,vy:0.0,vz:0.0,on_ground:false}
+        Self{id,kind:None,x:0.0,y:0.0,z:0.0,yaw:0.0,pitch:0.0,vx:0.0,vy:0.0,vz:0.0,on_ground:false}
     }
 }
 #[derive(Debug,Clone,PartialEq,Eq)]
@@ -216,6 +217,21 @@ impl LegacyGame {
                 for change in play::decode_multi_block_change(payload)? {self.set_block(change)?;}
                 UpdateKind::Block
             },
+            // Explicit spawn packets must anchor entity position before
+            // relative moves. Numeric types remain legacy-only.
+            0x0c | 0x0f => {
+                let spawned=if id==0x0c {spawn::decode_player(payload)?}
+                    else {spawn::decode_mob(payload)?};
+                self.update_entity(spawned.entity_id,|entity|{
+                    entity.kind=Some(spawned.kind);
+                    entity.x=spawned.x;entity.y=spawned.y;entity.z=spawned.z;
+                    entity.yaw=spawned.yaw;entity.pitch=spawned.pitch;
+                    entity.vx=spawned.velocity_x;
+                    entity.vy=spawned.velocity_y;
+                    entity.vz=spawned.velocity_z;
+                });
+                UpdateKind::Entity
+            },
             0x12 => {
                 let e=play::decode_entity_velocity(payload)?;
                 self.update_entity(e.entity_id,|entity|{
@@ -334,6 +350,24 @@ mod tests {
         let keep=state.apply(0,&[0x2c]).unwrap();
         assert_eq!(keep.replies[0],[0,0x2c]);
     }
+    #[test]
+    fn spawn_player_then_relative_move_updates_absolute_coordinates() {
+        let mut game=LegacyGame::default();
+        let mut data=Writer::new();
+        data.varint(99);data.uuid(0x123456);
+        data.i32(320);data.i32(2048);data.i32(-64);
+        data.u8(0);data.u8(64);data.i16(276);data.u8(0x7f);
+        assert_eq!(game.apply(0x0c,&data.data).unwrap().kind,UpdateKind::Entity);
+        assert_eq!(game.entities[&99].kind,
+            Some(spawn::EntityKind::Player{uuid:0x123456,held_item_id:276}));
+        assert_eq!((game.entities[&99].x,game.entities[&99].y,game.entities[&99].z),
+            (10.0,64.0,-2.0));
+        let mut rel=Writer::new();
+        rel.varint(99);rel.i8(16);rel.i8(0);rel.i8(0);rel.bool(true);
+        game.apply(0x15,&rel.data).unwrap();
+        assert_eq!(game.entities[&99].x,10.5);
+    }
+
     #[test]
     fn syncs_inventory_entities_plugins_and_removals() {
         let mut state=LegacyGame::default();
