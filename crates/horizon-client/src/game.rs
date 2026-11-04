@@ -248,6 +248,12 @@ mod quick_actions;
 mod raids;
 mod recipe_book;
 mod remote;
+mod legacy_remote;
+#[cfg(target_os = "android")]
+pub(crate) fn android_native_189_mode(enabled:bool) {
+    legacy_remote::set_android_native_189(enabled);
+}
+
 mod remote_camera;
 mod remote_chat;
 mod remote_chunks;
@@ -450,6 +456,8 @@ struct Options {
     window_size: [u32; 2],
     /// Multiplayer: `--server HOST[:PORT]` joins at start; `--name` is the offline player name.
     server: Option<String>,
+    /// Opt-in development path, not a public 1.8.9 compatibility guarantee.
+    native_189: bool,
     /// `--name`, `HORIZON_PLAYER_NAME` or the signed-in account's name; else
     /// [`Options::player_name`] uses the kept offline name.
     player_name: Option<String>,
@@ -606,6 +614,7 @@ impl Options {
                 .ok()
                 .and_then(|v| v.parse().ok()),
             server: None,
+            native_189: false,
             player_name: std::env::var("HORIZON_PLAYER_NAME")
                 .ok()
                 .filter(|n| !n.is_empty()),
@@ -647,6 +656,7 @@ impl Options {
                     break;
                 }
                 "--creative" => o.creative = true,
+                "--native-189-experimental" => o.native_189 = true,
                 "--test-terrain" => o.test_terrain = true,
                 "--no-pause" => o.no_pause = true,
                 "--offscreen" => o.offscreen = true,
@@ -2675,6 +2685,7 @@ struct Game<'a> {
     persist: persist::EntityMemory,
     /// Connected to a server: the world comes from the network (game/remote.rs).
     remote: Option<remote::Remote>,
+    legacy_remote: Option<legacy_remote::NativeLegacy>,
     /// This world is open to the network (game/lan.rs).
     lan: Option<lan::LanHost>,
     /// Single player's server thread, which `remote` is connected to.
@@ -4042,7 +4053,7 @@ impl Game<'_> {
             recipes: world_recipes!(self),
             // A client rolls no loot (LootTable.getRandomItems needs a
             // ServerLevel): it doesn't load the tables on its game thread.
-            loot: if self.remote.is_some() {
+            loot: if self.remote.is_some() || self.legacy_remote.is_some() {
                 None
             } else {
                 horizon_client::structure_blocks::loot_data(
@@ -4060,7 +4071,7 @@ impl Game<'_> {
             tickets: self.tickets.levels(),
             random_tick_sections: &mut self.random_tick_sections,
             lid_openers: &self.lid_openers,
-            client_side: self.remote.is_some(),
+            client_side: self.remote.is_some() || self.legacy_remote.is_some(),
             native_authoritative: self.serving.is_some() || self.options.dedicated.is_some(),
             debug: self.world_debug,
             native_sounds: &mut self.creatures.lan_sounds,
@@ -4097,6 +4108,9 @@ impl Game<'_> {
         self.process_level_events()
     }
     fn attack_block(&mut self, pos: [i32; 3]) -> Result<()> {
+        if self.legacy_remote.is_some() {
+            return Ok(());
+        }
         let note = self.with_level(|b, level, ticks| {
             b.attack_block(level, ticks, BlockPos::new(pos[0], pos[1], pos[2]))
         });
@@ -5397,6 +5411,11 @@ impl Game<'_> {
         self.stats.add("used", &stack.item, 1);
     }
     fn break_block(&mut self, pos: [i32; 3]) -> Result<()> {
+        if self.legacy_remote.is_some() {
+            // A native old-server block break needs C07/C08 actions, not
+            // the modern local Level.setBlock + loot/save mechanics.
+            return Ok(());
+        }
         self.lan_break_pos = Some(pos);
         let broken = self.with_player_actor(|game| game.break_block_as_player(pos));
         self.lan_break_pos = None;
@@ -5717,6 +5736,11 @@ impl Game<'_> {
     /// One hand's turn in `startUseItem`: `useItemOn` the block aimed at,
     /// then `useItem`. Whether the click ends here (it acted or failed).
     fn use_hand(&mut self, block_hit: Option<&Hit>) -> Result<bool> {
+        // The 26.3 item/block interaction code is never authoritative on a
+        // protocol-47 server. Its inventory IDs and block states are wrong.
+        if self.legacy_remote.is_some() {
+            return self.native_189_use_hand(block_hit);
+        }
         self.use_failed = false;
         // isSecondaryUseActive with something in either hand keeps blocks
         // from reacting.
@@ -6645,7 +6669,7 @@ impl Game<'_> {
         None
     }
     fn spawn_player(&mut self) -> Result<()> {
-        if self.player.is_some() || self.remote.is_some() {
+        if self.player.is_some() || self.remote.is_some() || self.legacy_remote.is_some() {
             return Ok(());
         }
         if let Some((_, target)) = &self.travelling {
@@ -6821,6 +6845,10 @@ impl Game<'_> {
         }
         if self.remote.is_some() {
             self.tick_remote()?;
+            return Ok(());
+        }
+        if self.legacy_remote.is_some() {
+            self.tick_native_189()?;
             return Ok(());
         }
         // LevelLoadingScreen.tick.
@@ -9037,6 +9065,9 @@ impl Game<'_> {
                 self.unselect_bundle(slot);
             }
         }
+        if self.legacy_remote.is_some() {
+            return self.native_189_menu_ops(ops);
+        }
         if self.remote.is_some() && self.screen == Screen::Inventory {
             // On a server the clicks are the server's: predicted and sent.
             return self.remote_menu_ops(ops);
@@ -11058,6 +11089,9 @@ impl Game<'_> {
     }
     /// Player.attack with the attack-strength charge, crits and knockback.
     fn attack(&mut self) -> bool {
+        if self.legacy_remote.is_some() {
+            return self.native_189_attack();
+        }
         if self.spectator() {
             return false;
         }
@@ -12000,7 +12034,7 @@ impl Game<'_> {
         self.clear_waypoints();
         self.post_effects.clear();
         self.spectated_post_effect = None;
-        if self.external_server() {
+        if self.external_server() || self.legacy_remote.is_some() {
             return self.leave_server(None);
         }
         self.begin_closing_save(false)
@@ -12011,7 +12045,7 @@ impl Game<'_> {
         // lets go of its track.
         self.music.stop_playing(None, &mut self.audio);
         self.audio.stop_all();
-        if self.remote.is_some() {
+        if self.remote.is_some() || self.legacy_remote.is_some() {
             self.world_icon = None;
             return self.leave_server(None);
         }
@@ -14432,7 +14466,7 @@ impl Game<'_> {
     /// generated chunk is saved, hundreds at a time, encoded and written on
     /// the region writer meanwhile.
     fn save_game_with(&mut self, wait: bool) -> Result<()> {
-        if self.remote.is_some() {
+        if self.remote.is_some() || self.legacy_remote.is_some() {
             return Ok(());
         }
         self.save_level(wait)?;
@@ -15727,6 +15761,11 @@ impl Game<'_> {
     fn update_world(&mut self) {
         if let Err(e) = self.poll_remote() {
             log::warn!("Horizon: {e}");
+        }
+        if let Err(error) = self.poll_native_189() {
+            log::warn!("Horizon: native Minecraft 1.8.9: {error}");
+            self.legacy_remote = None;
+            let _ = self.leave_server(Some(error.to_string()));
         }
         self.prepare_lod();
         if self.lod.is_some() {
@@ -18294,6 +18333,7 @@ impl<'a> Game<'a> {
             water_plane_scan: Default::default(),
             persist: Default::default(),
             remote: None,
+            legacy_remote: None,
             lan: None,
             integrated: None,
             level_shapes: Default::default(),

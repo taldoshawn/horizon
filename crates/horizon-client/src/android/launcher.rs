@@ -158,6 +158,7 @@ impl Launcher {
             drop(game);
         }
         crate::game::android_reset_bundled_mods();
+        crate::game::android_native_189_mode(false);
         crate::document_store::set_game_active(false);
         crate::performance::stop();
         crate::platform::hide();
@@ -375,6 +376,11 @@ impl Launcher {
                 }
             };
 
+            if self.catalog.config.runtime == crate::catalog::RuntimeMode::Native1_8_9Experimental
+                && self.catalog.config.server.trim().is_empty() {
+                self.error = Some("Native 1.8.9 WIP needs a 1.8.9 multiplayer server address in Settings. Singleplayer is not ready.".into());
+                return Ok(());
+            }
             self.audio = None;
             self.error = None;
             let _ = std::fs::remove_file(self.home.join("android-error.txt"));
@@ -411,6 +417,7 @@ impl Launcher {
                 extra_arguments,
                 open_gl: self.catalog.config.renderer == crate::catalog::RendererMode::OpenGl,
                 gpu_batching: self.catalog.config.renderer == crate::catalog::RendererMode::Vulkan,
+                native_189_experimental: self.catalog.config.runtime == crate::catalog::RuntimeMode::Native1_8_9Experimental,
             };
             crate::document_store::set_game_active(true);
             let game = match crate::game_launch::start(request) {

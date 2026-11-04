@@ -86,6 +86,54 @@ pub fn decode_position_look(payload: &[u8]) -> Result<PositionLook> {
     Ok(pos)
 }
 
+/// Clientbound PLAY 0x07 — respawn the world in a different dimension.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Respawn {
+    pub dimension:i32,pub difficulty:u8,pub game_mode:u8,pub world_type:String,
+}
+pub fn decode_respawn(payload:&[u8])->Result<Respawn> {
+    let mut r=Reader::new(payload);
+    let result=Respawn {
+        dimension:r.i32()?,difficulty:r.u8()?,game_mode:r.u8()?,
+        world_type:r.string(16)?,
+    };
+    if !(-1..=1).contains(&result.dimension) {
+        return Err(Error::new("1.8 custom dimension requires modded registry support"));
+    }
+    if result.game_mode>3 || result.difficulty>3 {
+        return Err(Error::new("invalid 1.8 respawn game mode or difficulty"));
+    }
+    ensure_consumed(&r,"respawn")?;
+    Ok(result)
+}
+/// Clientbound PLAY 0x06 — health, hunger and food saturation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UpdateHealth {
+    pub health:f32,pub food:i32,pub saturation:f32,
+}
+pub fn decode_update_health(payload:&[u8])->Result<UpdateHealth>{
+    let mut r=Reader::new(payload);
+    let result=UpdateHealth {
+        health:r.f32()?,food:r.varint()?,saturation:r.f32()?,
+    };
+    if !result.health.is_finite() || !result.saturation.is_finite()
+        || !(0..=20).contains(&result.food)
+        || result.health < -1024.0 || result.health>1024.0
+        || !(0.0..=20.0).contains(&result.saturation) {
+        return Err(Error::new("invalid 1.8 player health or food data"));
+    }
+    ensure_consumed(&r,"update health")?;
+    Ok(result)
+}
+/// Clientbound PLAY 0x09 — change currently selected quickbar slot.
+pub fn decode_held_item_change(payload:&[u8])->Result<u8>{
+    let mut r=Reader::new(payload);
+    let slot=r.u8()?;
+    if slot>8{return Err(Error::new("invalid 1.8 selected hotbar slot"));}
+    ensure_consumed(&r,"held item change")?;
+    Ok(slot)
+}
+
 /// Movement packet 0x06: respond to the 1.8 position correction (there is NO teleport id).
 /// `position` must have flags already resolved to absolute coordinates.
 pub fn position_look_response_body(position: PositionLook, on_ground: bool) -> Vec<u8> {
@@ -185,6 +233,11 @@ pub fn decode_chunk_data(payload: &[u8], has_sky_light: bool) -> Result<ChunkDat
     let len = r.count(MAX_CHUNK_BYTES)?;
     let bytes = r.bytes(len)?;
     ensure_consumed(&r, "chunk data")?;
+    // Vanilla 1.8 unloads a chunk with full=true, mask=0 and a zero-size
+    // data array. The normal fully-empty column has 256 biome bytes instead.
+    if full && bitmask == 0 && bytes.is_empty() {
+        return Ok(ChunkData { x, z, full, sections: vec![], biomes: None });
+    }
     chunk_sections(x, z, full, bitmask, bytes, has_sky_light)
 }
 
@@ -320,6 +373,257 @@ pub fn decode_entity_relative_move(payload: &[u8]) -> Result<EntityRelativeMove>
     Ok(value)
 }
 
+
+/// Clientbound 0x16 — rotation only. Angle is byte/256 of a turn.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EntityLook {
+    pub entity_id:i32,pub yaw:f32,pub pitch:f32,pub on_ground:bool,
+}
+pub fn decode_entity_look(payload:&[u8])->Result<EntityLook>{
+    let mut r=Reader::new(payload);
+    let result=EntityLook{
+        entity_id:r.varint()?,
+        yaw:f32::from(r.u8()?)*(360.0/256.0),
+        pitch:f32::from(r.u8()?)*(360.0/256.0),
+        on_ground:r.bool()?,
+    };
+    ensure_consumed(&r,"entity look")?;
+    Ok(result)
+}
+/// Clientbound 0x17 — relative movement with yaw/pitch and ground flag.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EntityLookMove {
+    pub entity_id:i32,pub dx:f64,pub dy:f64,pub dz:f64,
+    pub yaw:f32,pub pitch:f32,pub on_ground:bool,
+}
+pub fn decode_entity_look_move(payload:&[u8])->Result<EntityLookMove>{
+    let mut r=Reader::new(payload);
+    let result=EntityLookMove{
+        entity_id:r.varint()?,
+        dx:f64::from(r.i8()?)/32.0,dy:f64::from(r.i8()?)/32.0,
+        dz:f64::from(r.i8()?)/32.0,
+        yaw:f32::from(r.u8()?)*(360.0/256.0),
+        pitch:f32::from(r.u8()?)*(360.0/256.0),
+        on_ground:r.bool()?,
+    };
+    ensure_consumed(&r,"entity look and move")?;
+    Ok(result)
+}
+/// Clientbound 0x19 — head yaw independent of body yaw.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EntityHeadLook {pub entity_id:i32,pub yaw:f32}
+pub fn decode_entity_head_look(payload:&[u8])->Result<EntityHeadLook>{
+    let mut r=Reader::new(payload);
+    let result=EntityHeadLook{
+        entity_id:r.varint()?,yaw:f32::from(r.u8()?)*(360.0/256.0),
+    };
+    ensure_consumed(&r,"entity head look")?;
+    Ok(result)
+}
+
+/// Signed x/z and 12-bit Y, packed as (x:26, z:26, y:12).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockPosition {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+}
+impl BlockPosition {
+    pub fn from_wire(bits: i64) -> Self {
+        Self {
+            x: (bits >> 38) as i32,
+            y: (bits & 0xfff) as i32,
+            z: ((bits << 26) >> 38) as i32,
+        }
+    }
+    pub fn to_wire(self) -> Result<i64> {
+        if !(-33_554_432..=33_554_431).contains(&self.x)
+            || !(-33_554_432..=33_554_431).contains(&self.z)
+            || !(0..=4095).contains(&self.y) {
+            return Err(Error::new("1.8 block position is outside 26/12-bit bounds"));
+        }
+        Ok(((i64::from(self.x) & 0x3ffffff) << 38)
+            | ((i64::from(self.z) & 0x3ffffff) << 12)
+            | i64::from(self.y))
+    }
+}
+
+/// Server block-state identifier (Block.BLOCK_STATE_IDS, not 26.3 registry ID).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockChange {
+    pub position: BlockPosition,
+    pub state_id: i32,
+}
+/// Clientbound 0x23: one block change.
+pub fn decode_block_change(data: &[u8]) -> Result<BlockChange> {
+    let mut r = Reader::new(data);
+    let position = BlockPosition::from_wire(r.i64()?);
+    let state_id = r.varint()?;
+    if state_id < 0 { return Err(Error::new("negative 1.8 block state ID")); }
+    ensure_consumed(&r, "block change")?;
+    Ok(BlockChange { position, state_id })
+}
+
+/// Clientbound 0x22: multiple block changes in one chunk column.
+pub fn decode_multi_block_change(data: &[u8]) -> Result<Vec<BlockChange>> {
+    let mut r = Reader::new(data);
+    let chunk_x = r.i32()?;
+    let chunk_z = r.i32()?;
+    let n = r.count(65_536)?;
+    if n > r.remaining() / 3 {
+        return Err(Error::new("not enough bytes for 1.8 block-change records"));
+    }
+    let mut changed = Vec::with_capacity(n);
+    for _ in 0..n {
+        let xz = r.u8()?;
+        let y = i32::from(r.u8()?);
+        let state_id = r.varint()?;
+        if state_id < 0 { return Err(Error::new("negative 1.8 block state ID")); }
+        changed.push(BlockChange {
+            position: BlockPosition {
+                x: chunk_x.saturating_mul(16).saturating_add(i32::from(xz >> 4)),
+                y,
+                z: chunk_z.saturating_mul(16).saturating_add(i32::from(xz & 15)),
+            },
+            state_id,
+        });
+    }
+    ensure_consumed(&r, "multi block change")?;
+    Ok(changed)
+}
+
+/// Clientbound 0x18 entity teleport (x/y/z are fixed point / 32).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EntityTeleport {
+    pub entity_id: i32,
+    pub x: f64, pub y: f64, pub z: f64,
+    pub yaw: f32, pub pitch: f32,
+    pub on_ground: bool,
+}
+pub fn decode_entity_teleport(data: &[u8]) -> Result<EntityTeleport> {
+    let mut r = Reader::new(data);
+    let value = EntityTeleport {
+        entity_id: r.varint()?,
+        x: f64::from(r.i32()?) / 32.0,
+        y: f64::from(r.i32()?) / 32.0,
+        z: f64::from(r.i32()?) / 32.0,
+        yaw: f32::from(r.u8()?) * (360.0 / 256.0),
+        pitch: f32::from(r.u8()?) * (360.0 / 256.0),
+        on_ground: r.bool()?,
+    };
+    ensure_consumed(&r, "entity teleport")?;
+    Ok(value)
+}
+
+/// Clientbound 0x12 velocity, fixed point /8000.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EntityVelocity {
+    pub entity_id: i32,
+    pub x: f64, pub y: f64, pub z: f64,
+}
+pub fn decode_entity_velocity(data: &[u8]) -> Result<EntityVelocity> {
+    let mut r = Reader::new(data);
+    let value = EntityVelocity {
+        entity_id: r.varint()?,
+        x: f64::from(r.i16()?) / 8000.0,
+        y: f64::from(r.i16()?) / 8000.0,
+        z: f64::from(r.i16()?) / 8000.0,
+    };
+    ensure_consumed(&r, "entity velocity")?;
+    Ok(value)
+}
+
+/// Serverbound 0x03, movement heartbeat and ground state.
+pub fn player_ground_body(on_ground: bool) -> Vec<u8> {
+    let mut w = Writer::new(); w.varint(0x03); w.bool(on_ground); w.data
+}
+
+/// Serverbound 0x05, look-only tick.
+pub fn player_look_body(yaw: f32, pitch: f32, on_ground: bool) -> Result<Vec<u8>> {
+    if !yaw.is_finite() || !pitch.is_finite() {
+        return Err(Error::new("1.8 rotation must be finite"));
+    }
+    let mut w = Writer::new();
+    w.varint(0x05); w.f32(yaw); w.f32(pitch); w.bool(on_ground);
+    Ok(w.data)
+}
+
+/// Serverbound 0x07, block digging / abort / completion / dropping.
+pub fn digging_body(status: u8, position: BlockPosition, face: u8) -> Result<Vec<u8>> {
+    if status > 5 || face > 5 {
+        return Err(Error::new("invalid 1.8 digging status or face"));
+    }
+    let mut w = Writer::new();
+    w.varint(0x07); w.u8(status); w.i64(position.to_wire()?); w.u8(face);
+    Ok(w.data)
+}
+
+
+/// Serverbound 0x0b: 1.8 EntityAction. The local player entity ID comes
+/// from JoinGame (0x01), and action IDs match the pre-1.9 server protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum PlayerAction {
+    StartSneaking=0,
+    StopSneaking=1,
+    LeaveBed=2,
+    StartSprinting=3,
+    StopSprinting=4,
+    StartHorseJump=5,
+    StopHorseJump=6,
+    OpenHorseInventory=7,
+}
+pub fn player_action_body(entity_id:i32,action:PlayerAction,jump_boost:i32)->Result<Vec<u8>> {
+    if entity_id<0 {return Err(Error::new("negative player entity ID"));}
+    if jump_boost<0 {return Err(Error::new("negative 1.8 horse jump boost"));}
+    let mut w=Writer::new();
+    w.varint(0x0b);w.varint(entity_id);w.varint(action as i32);w.varint(jump_boost);
+    Ok(w.data)
+}
+
+/// Serverbound 0x0a: swing arm (without a modern hand enum).
+pub fn swing_arm_body() -> Vec<u8> { vec![0x0a] }
+
+
+/// Serverbound PLAY 0x08 — right click a block, opening a legacy container
+/// or placing an item. The server remains authoritative for resulting blocks.
+/// Face is 0..5; fractional cursor offsets are units of 1/16 block.
+pub fn place_block_body(
+    position:BlockPosition,face:u8,
+    item:Option<&super::inventory::ItemStack>,
+    cursor:[u8;3],
+)->Result<Vec<u8>> {
+    if face>5 || cursor.iter().any(|&v|v>15) {
+        return Err(Error::new("invalid 1.8 placement face or cursor"));
+    }
+    let mut w=Writer::new();
+    w.varint(0x08);w.i64(position.to_wire()?);
+    w.u8(face);
+    super::inventory::write_slot(&mut w,item)?;
+    for value in cursor {w.u8(value);}
+    Ok(w.data)
+}
+
+/// C08 in 1.8: right-click sword in air for blocking. This predates the
+/// dual-wield/hand enum; the sentinel position is (-1,-1,-1), face 255.
+/// The held item is a legacy NBT Slot, not a modern data-component item.
+pub fn sword_block_body(item:Option<&super::inventory::ItemStack>)->Result<Vec<u8>> {
+    let mut w=Writer::new();
+    w.varint(0x08);
+    w.i64(-1); // Sentinel: all 64 packed position bits set.
+    w.u8(255);
+    super::inventory::write_slot(&mut w,item)?;
+    w.u8(0);w.u8(0);w.u8(0);
+    Ok(w.data)
+}
+
+/// C07 release item use: status=5 with an unused BlockPos and face.
+pub fn release_use_item_body()->Vec<u8>{
+    let mut w=Writer::new();
+    w.varint(0x07);w.u8(5);w.i64(0);w.u8(0);
+    w.data
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -385,6 +689,16 @@ mod tests {
         corrupted.pop();
         assert!(decode_chunk_data(&corrupted, true).is_err());
         assert!(decode_chunk_data(&packet.data, false).is_err());
+    }
+
+    #[test]
+    fn zero_length_chunk_unload_uses_protocol_47_sentinel() {
+        let mut w=Writer::new();
+        w.i32(-3);w.i32(4);w.bool(true);w.u16(0);w.byte_array(&[]);
+        let chunk=decode_chunk_data(&w.data,true).unwrap();
+        assert_eq!((chunk.x,chunk.z),(-3,4));
+        assert!(chunk.sections.is_empty());
+        assert!(chunk.biomes.is_none());
     }
 
     #[test]
@@ -472,6 +786,106 @@ mod tests {
         assert_eq!(decode_entity_relative_move(&m.data).unwrap(), EntityRelativeMove {
             entity_id:5, dx:-1.0, dy:0.5, dz:0.25, on_ground:true,
         });
+    }
+
+    #[test]
+    fn legacy_block_updates_decode_signed_position_and_chunk_local_coordinates() {
+        let pos = BlockPosition { x: -123, y: 70, z: -17 };
+        assert_eq!(BlockPosition::from_wire(pos.to_wire().unwrap()), pos);
+        let mut w = Writer::new();
+        w.i64(pos.to_wire().unwrap()); w.varint(35 << 4 | 14);
+        assert_eq!(decode_block_change(&w.data).unwrap().state_id, 574);
+        let mut bulk = Writer::new();
+        bulk.i32(-2); bulk.i32(4); bulk.varint(2);
+        bulk.u8((3 << 4) | 5); bulk.u8(64); bulk.varint(1);
+        bulk.u8(15); bulk.u8(70); bulk.varint(0);
+        let changes = decode_multi_block_change(&bulk.data).unwrap();
+        assert_eq!(changes[0].position, BlockPosition { x: -29, y: 64, z: 69 });
+        assert_eq!(changes[1].position, BlockPosition { x: -32, y: 70, z: 79 });
+        assert!(decode_multi_block_change(&bulk.data[..bulk.data.len()-1]).is_err());
+    }
+
+    #[test]
+    fn classic_right_click_block_has_position_face_item_and_fractional_cursor() {
+        let p=BlockPosition{x:8,y:64,z:-3};
+        let packet=place_block_body(p,1,None,[8,15,0]).unwrap();
+        assert_eq!(packet[0],0x08);
+        let mut read=Reader::new(&packet[1..]);
+        assert_eq!(BlockPosition::from_wire(read.i64().unwrap()),p);
+        assert_eq!(read.u8().unwrap(),1);
+        assert_eq!(read.i16().unwrap(),-1); // Empty 1.8 Slot
+        assert_eq!(read.bytes(3).unwrap(),&[8,15,0]);
+        assert_eq!(read.remaining(),0);
+        assert!(place_block_body(p,6,None,[0;3]).is_err());
+        assert!(place_block_body(p,3,None,[0,16,0]).is_err());
+    }
+    #[test]
+    fn respawn_health_and_server_selected_hotbar_reject_invalid_wire_data(){
+        let mut d=Writer::new();
+        d.i32(-1);d.u8(2);d.u8(0);d.string("default");
+        let respawn=decode_respawn(&d.data).unwrap();
+        assert_eq!(respawn.dimension,-1);
+        d.data[3]=3;
+        assert!(decode_respawn(&d.data).is_err());
+        let mut h=Writer::new();
+        h.f32(18.0);h.varint(17);h.f32(4.0);
+        assert_eq!(decode_update_health(&h.data).unwrap().food,17);
+        let mut bad=Writer::new();
+        bad.f32(f32::NAN);bad.varint(17);bad.f32(4.0);
+        assert!(decode_update_health(&bad.data).is_err());
+        assert_eq!(decode_held_item_change(&[8]).unwrap(),8);
+        assert!(decode_held_item_change(&[9]).is_err());
+        assert!(decode_held_item_change(&[3,4]).is_err());
+    }
+
+    #[test]
+    fn old_entity_rotations_decode_full_movement_and_reject_trailing_bytes() {
+        let mut look=Writer::new();
+        look.varint(123);look.u8(64);look.u8(192);look.bool(true);
+        let l=decode_entity_look(&look.data).unwrap();
+        assert_eq!((l.entity_id,l.yaw,l.pitch,l.on_ground),(123,90.0,270.0,true));
+        look.u8(0);assert!(decode_entity_look(&look.data).is_err());
+
+        let mut move_and_look=Writer::new();
+        move_and_look.varint(123);move_and_look.i8(-32);
+        move_and_look.i8(8);move_and_look.i8(16);
+        move_and_look.u8(128);move_and_look.u8(0);move_and_look.bool(false);
+        let m=decode_entity_look_move(&move_and_look.data).unwrap();
+        assert_eq!((m.dx,m.dy,m.dz),(-1.0,0.25,0.5));
+        assert_eq!((m.yaw,m.pitch,m.on_ground),(180.0,0.0,false));
+
+        let mut head=Writer::new();head.varint(123);head.u8(32);
+        assert_eq!(decode_entity_head_look(&head.data).unwrap().yaw,45.0);
+        assert!(decode_entity_head_look(&head.data[..1]).is_err());
+    }
+
+    #[test]
+    fn sprint_sneak_packets_use_legacy_entity_actions() {
+        assert_eq!(player_action_body(5,PlayerAction::StartSprinting,0).unwrap(),
+            [0x0b,5,3,0]);
+        assert_eq!(player_action_body(5,PlayerAction::StopSprinting,0).unwrap(),
+            [0x0b,5,4,0]);
+        assert_eq!(player_action_body(5,PlayerAction::StartSneaking,0).unwrap(),
+            [0x0b,5,0,0]);
+        assert!(player_action_body(-1,PlayerAction::StartSprinting,0).is_err());
+    }
+
+    #[test]
+    fn old_entity_teleport_and_velocity_and_player_actions() {
+        let mut w = Writer::new();
+        w.varint(10); w.i32(-64); w.i32(2048); w.i32(96);
+        w.u8(64); w.u8(128); w.bool(true);
+        let teleport = decode_entity_teleport(&w.data).unwrap();
+        assert_eq!((teleport.x, teleport.y, teleport.z), (-2.0, 64.0, 3.0));
+        assert_eq!(teleport.yaw, 90.0);
+        let mut vel = Writer::new();
+        vel.varint(10); vel.i16(8000); vel.i16(-4000); vel.i16(0);
+        let velocity = decode_entity_velocity(&vel.data).unwrap();
+        assert_eq!((velocity.x, velocity.y, velocity.z), (1.0, -0.5, 0.0));
+        assert_eq!(player_ground_body(true), [3,1]);
+        assert_eq!(swing_arm_body(), [10]);
+        assert_eq!(digging_body(0, BlockPosition {x: 0,y:64,z:0}, 1).unwrap().len(), 11);
+        assert!(player_look_body(f32::NAN, 0.0, false).is_err());
     }
 
 }

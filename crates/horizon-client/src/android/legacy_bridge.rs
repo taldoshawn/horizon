@@ -1,5 +1,5 @@
-//! Safe, explicit bridge selection. No protocol-47 play compatibility is claimed.
-//! The game still speaks 26.3; ViaProxy must translate it to the 1.8.9 server.
+//! Explicit transport selection: native protocol-47 development mode or the
+//! older external ViaProxy path. Neither implies fully playable 1.8.9.
 use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
@@ -10,7 +10,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_millis(450);
 
 pub fn server(mode: RuntimeMode, configured: &str) -> String {
     match mode {
-        RuntimeMode::Native26_3 => configured.to_string(),
+        RuntimeMode::Native26_3 | RuntimeMode::Native1_8_9Experimental => configured.to_string(),
         RuntimeMode::Legacy1_8_9ViaProxy => LOOPBACK.to_string(),
     }
 }
@@ -18,7 +18,7 @@ pub fn server(mode: RuntimeMode, configured: &str) -> String {
 /// Check whether a process actually accepts TCP connections on the loopback
 /// port. This DOES NOT prove it is ViaProxy or that 1.8.9 will play correctly.
 pub fn check(mode: RuntimeMode) -> Result<(), String> {
-    if mode == RuntimeMode::Native26_3 { return Ok(()); }
+    if mode != RuntimeMode::Legacy1_8_9ViaProxy { return Ok(()); }
     let addr: SocketAddr = LOOPBACK.parse().expect("constant valid socket address");
     TcpStream::connect_timeout(&addr, PROBE_TIMEOUT)
         .map(|stream| drop(stream))
@@ -33,6 +33,11 @@ mod tests {
     #[test]
     fn native_keeps_existing_server() {
         assert_eq!(server(RuntimeMode::Native26_3, "example.org:25565"), "example.org:25565");
+    }
+    #[test]
+    fn native_legacy_uses_real_server_and_needs_no_local_proxy() {
+        assert_eq!(server(RuntimeMode::Native1_8_9Experimental, "localhost:25565"), "localhost:25565");
+        assert!(check(RuntimeMode::Native1_8_9Experimental).is_ok());
     }
     #[test]
     fn bridge_only_uses_loopback() {

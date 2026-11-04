@@ -40,6 +40,26 @@ pub const CURRENT: i32 = crate::DATA_VERSION;
 /// server fix is, down to the saves of 1.8, which have no DataVersion (read as -1).
 pub const OLDEST_SUPPORTED: i32 = -1;
 
+/// Resolve a pre-flattening numeric block state (block ID << 4 | metadata)
+/// through the original Java flattening table. Used only as a visual mapping
+/// into the modern renderer; it does NOT provide 1.8 block behavior or
+/// modded registry compatibility. Values >= 4096 are not in the vanilla table.
+pub fn legacy_block_state_tag(state: u16) -> Option<Tag> {
+    (state < 4096).then(|| block_state_data::get_tag(i32::from(state)))
+}
+
+/// The original numeric legacy ItemIdFix mapping, used to draw native 1.8
+/// network inventory slots. Pre-flattened item damage and NBT still require
+/// separate version-specific translation; do not send these names as wire IDs.
+pub fn legacy_item_name(id:i16)->Option<&'static str> {
+    if id<0{return None;}
+    flat_tables::ITEM_IDS.iter()
+        .find(|(old,_)|*old==i32::from(id))
+        .map(|(_,name)|*name)
+}
+
+
+
 /// `Identifier.tryParse` validity, as `NamespacedSchema.ensureNamespaced` uses it.
 pub fn identifier(id: &str) -> Option<(String, String)> {
     let (ns, path) = match id.split_once(':') {

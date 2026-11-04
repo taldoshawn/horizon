@@ -10,6 +10,15 @@
 //! renderer are NOT implemented. Do not advertise this module as a playable
 //! 1.8 client. See docs/legacy-1.8-port.md.
 pub mod play;
+pub mod inventory;
+pub mod plugin;
+pub mod world;
+pub mod state;
+pub mod physics;
+pub mod superflat;
+pub mod spawn;
+pub mod session;
+pub mod async_session;
 
 use std::time::Duration;
 

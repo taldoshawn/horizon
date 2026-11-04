@@ -888,7 +888,7 @@ impl Game<'_> {
         self.ui.chat.add_recent(&message);
         // On a server (single player's own included) the server runs it,
         // unless a client mod owns the command.
-        if self.remote.is_some() {
+        if self.remote.is_some() || self.legacy_remote.is_some() {
             if let Some(command) = message.strip_prefix('/')
                 && self.client_mod_command(command)
             {

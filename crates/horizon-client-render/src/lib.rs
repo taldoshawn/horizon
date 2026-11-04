@@ -48,6 +48,8 @@ pub mod jigsaw_block;
 pub mod keypad;
 pub mod level_loading;
 pub mod light;
+pub mod legacy_chunk;
+pub mod legacy_world;
 pub mod lod;
 pub mod logging;
 pub mod menu_blur;

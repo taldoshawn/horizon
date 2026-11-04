@@ -196,7 +196,7 @@ impl ChatTrust {
 }
 
 /// Streaming needs a generator; a server world never generates.
-struct NoTerrain;
+pub(super) struct NoTerrain;
 impl ChunkGenerator for NoTerrain {
     type Worker = ();
     fn worker(&self) {}
@@ -742,7 +742,12 @@ impl Game<'_> {
             return Ok(());
         }
         self.join_world_rest()?;
-        if let Err(error) = self.join_server(address, name, None, cookies, lan) {
+        let connection_result = if !lan && cookies.is_none() && self.native_189_requested() {
+            self.connect_native_189(address, name)
+        } else {
+            self.join_server(address, name, None, cookies, lan)
+        };
+        if let Err(error) = connection_result {
             log::warn!("Horizon: could not join server: {error}");
             if self.title.is_none() {
                 self.title = Some(
@@ -1058,6 +1063,7 @@ impl Game<'_> {
             return self.begin_closing_save(false);
         }
         self.finish_perf();
+        self.legacy_remote = None;
         if reason.is_none() {
             // Leaving on purpose: nothing for auto-reconnect to retry.
             self.extras_left();
@@ -2376,11 +2382,12 @@ impl Game<'_> {
     }
     /// `recreateFromPacket`: yRot and xRot from the packet, the body and head
     /// both at its head yaw (LivingEntity).
-    fn spawn_entity(&mut self, id: i32, kind: &str, position: [f64; 3], rotation: [f32; 3]) {
+    pub(super) fn spawn_entity(&mut self, id: i32, kind: &str, position: [f64; 3], rotation: [f32; 3]) {
         let [yaw, pitch, head] = rotation;
         let at = Vec3::new(position[0], position[1], position[2]);
         let mob_type = if kind == "minecraft:player" {
             self.remote.as_ref().and_then(|r| r.player_type.clone())
+                .or_else(||super::perspective::player_type(&self.options.resources))
         } else {
             self.res.mob_types().get(kind).cloned()
         };
@@ -8297,6 +8304,12 @@ impl Game<'_> {
     pub(super) fn send_chat(&mut self, message: &str) {
         let message = message.trim();
         if message.is_empty() || !self.chat_abilities().allows(message) {
+            return;
+        }
+        if self.legacy_remote.is_some() {
+            if let Err(error)=self.native_send_chat(message) {
+                log::warn!("Sending protocol-47 chat: {error}");
+            }
             return;
         }
         if let Some(command) = message.strip_prefix('/') {

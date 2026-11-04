@@ -2,9 +2,15 @@ name: Rust protocol 1.8.9 checks
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'feature/native-1_8_9-wire']
     paths:
       - 'crates/horizon-protocol/**'
+      - 'crates/horizon-client-render/**'
+      - 'crates/horizon-client/src/game.rs'
+      - 'crates/horizon-client/src/game/legacy_remote.rs'
+      - 'crates/horizon-client/src/game/remote.rs'
+      - 'crates/horizon-client/src/lib.rs'
+      - 'crates/horizon-world/src/datafix/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
@@ -25,4 +31,117 @@ jobs:
       - name: Check protocol 1.8.9 Rust tests
         run: cargo test -p horizon-protocol --lib legacy_v1_8 -- --nocapture
       - name: Check protocol probe build
-        run: cargo check -p horizon-protocol --example legacy18_probe
+        run: |
+          cargo check -p horizon-protocol --example legacy18_probe
+          cargo check -p horizon-protocol --example legacy18_live_worker
+
+  renderer-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up pinned Rust toolchain
+        run: rustup show
+      - name: Test legacy blocks and light in native renderer chunk storage
+        run: |
+          cargo test -p horizon-client-render --lib legacy_chunk::tests -- --nocapture
+          cargo test -p horizon-client-render --lib legacy_world::tests -- --nocapture
+
+
+  native-game-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up pinned Rust toolchain
+        run: rustup show
+      - name: Install desktop check prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y libasound2-dev libudev-dev libx11-dev libxcursor-dev libxi-dev libxrandr-dev libxkbcommon-dev libwayland-dev
+      - name: Compile real Horizon game with protocol-47 integration
+        run: cargo check -p horizon-client --bin horizon-client
+
+  vanilla-189-server:
+    name: Verify unmodified Mojang 1.8.9 dedicated server
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use pinned Rust toolchain
+        run: rustup show
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+      - name: Download exact vanilla server from official Mojang metadata
+        run: |
+          mkdir -p .local/vanilla189
+          python3 - <<'PY'
+          import hashlib, json, pathlib, urllib.request
+          base='https://piston-meta.mojang.com/mc/game/version_manifest_v2.json'
+          with urllib.request.urlopen(base, timeout=40) as request:
+              versions=json.load(request)['versions']
+          entry=next(v for v in versions if v['id']=='1.8.9')
+          with urllib.request.urlopen(entry['url'], timeout=40) as request:
+              downloads=json.load(request)['downloads']
+          server=downloads['server']
+          with urllib.request.urlopen(server['url'], timeout=90) as request:
+              data=request.read()
+          assert hashlib.sha1(data).hexdigest()==server['sha1'], 'Mojang SHA-1 mismatch'
+          pathlib.Path('.local/vanilla189/server.jar').write_bytes(data)
+          print('Downloaded official vanilla 1.8.9 jar (verified SHA-1)')
+          PY
+      - name: Start unmodified Minecraft Java 1.8.9 server in offline test mode
+        working-directory: .local/vanilla189
+        run: |
+          printf 'eula=true\n' > eula.txt
+          cat > server.properties <<'EOF'
+          server-ip=127.0.0.1
+          server-port=25565
+          online-mode=false
+          view-distance=3
+          spawn-protection=0
+          max-players=4
+          motd=Horizon protocol-47 CI
+          EOF
+          java -Xms256M -Xmx1G -jar server.jar nogui > vanilla.log 2>&1 &
+          echo "$!" > vanilla.pid
+          python3 - <<'PY'
+          import socket, subprocess, time, pathlib
+          for _ in range(90):
+              time.sleep(1)
+              process=int(pathlib.Path('vanilla.pid').read_text())
+              if subprocess.run(['kill','-0',str(process)],capture_output=True).returncode:
+                  raise SystemExit('Vanilla 1.8.9 server exited before becoming ready')
+              try:
+                  with socket.create_connection(('127.0.0.1',25565),timeout=0.5):
+                      print('Vanilla 1.8.9 TCP server listening')
+                      break
+              except OSError: pass
+          else:
+              raise SystemExit('Vanilla 1.8.9 server startup timeout')
+          PY
+      - name: Verify real protocol-47 login, spawn correction and chunk transfer
+        run: |
+          timeout 120s cargo run --locked -p horizon-protocol --example legacy18_probe -- \
+            127.0.0.1:25565 HorizonCI189 --expect-world
+      - name: Verify Android-equivalent native TCP worker, world data, and movement
+        run: |
+          timeout 90s cargo run --locked -p horizon-protocol --example legacy18_live_worker -- \
+            127.0.0.1:25565 HorizonWorkerCI
+      - name: Show vanilla server log on failure
+        if: failure()
+        run: tail -150 .local/vanilla189/vanilla.log || true
+      - name: Stop vanilla server
+        if: always()
+        run: |
+          if test -s .local/vanilla189/vanilla.pid; then
+            kill "$(cat .local/vanilla189/vanilla.pid)" || true
+          fi

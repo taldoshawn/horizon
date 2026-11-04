@@ -3,7 +3,7 @@ run-name: Android dev · ${{ github.sha }}
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'feature/native-1_8_9-wire']
     paths:
       - 'crates/**'
       - 'Cargo.toml'
@@ -28,12 +28,14 @@ permissions:
   contents: read
 concurrency:
   group: android-dev-${{ github.ref }}
-  cancel-in-progress: true
+  # Preserve ongoing ARM64 dev builds while native-1.8 development commits land.
+  # On main, stale builds may still be cancelled.
+  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
 
 jobs:
   build:
     # Never expose a signing secret to pull requests or arbitrary dispatch refs.
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/native-1_8_9-wire'
     runs-on: ubuntu-24.04
     timeout-minutes: 150
     strategy:
@@ -51,7 +53,7 @@ jobs:
           persist-credentials: false
       - name: Restore dedicated dev signing identity
         env:
-          DEV_KEYSTORE: ${{ secrets.ANDROID_DEV_KEYSTORE_BASE64 }}
+          DEV_KEYSTORE: ${{ github.ref == 'refs/heads/main' && secrets.ANDROID_DEV_KEYSTORE_BASE64 || '' }}
         run: |
           python3 - <<'PY'
           import base64, os
@@ -137,7 +139,7 @@ jobs:
           for source, dest in [('LICENSE', 'LICENSE.txt'), ('THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_NOTICES.md')]:
               shutil.copyfile(source, out / dest)
           (out / 'BUILD.json').write_text(json.dumps({'commit': sha, 'abi': abi, 'profile': 'release',
-              'package': 'dev.horizon.android.dev', 'experimental': True, 'legacy_1_8_9': 'external_proxy_only', 'pojav_style_launcher_rust': True,
+              'package': 'dev.horizon.android.dev', 'experimental': True, 'legacy_1_8_9': ('native_core_wip_NOT_PLAYABLE' if os.environ.get('GITHUB_REF_NAME') == 'feature/native-1_8_9-wire' else 'external_proxy_only'), 'pojav_style_launcher_rust': True,
               'run': f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'}, indent=2) + '\n')
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
               summary.write(f'### Dev APK: {abi}\n\nCommit: `{sha}`. Optimized release profile; experimental build.\n\n'
