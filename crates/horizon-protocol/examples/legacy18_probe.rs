@@ -1,54 +1,66 @@
-//! Protocol 47 diagnostic (not a gameplay client): joins a 1.8 offline-mode
-//! server, acknowledges 1.8 movement corrections and validates chunk framing.
-//! Does not render the world, load entities, or authenticate premium servers.
+//! Headless protocol-47 state-sync diagnostic. NOT a playable/rendered client.
+//! Logs into an offline 1.8.9 test server, handles join, keepalive, server
+//! corrections, blocks, entities, inventory, chat and plugin channels.
+//! Online-mode servers need a proper Microsoft session-auth callback.
 use std::time::Duration;
 use horizon_protocol::legacy_v1_8::{
-    connect_login, keep_alive_id, keep_alive_response_body,
-    play::{self, PositionLook},
+    connect_login,
+    play,
+    plugin,
+    state::{LegacyGame,UpdateKind},
 };
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut args = std::env::args().skip(1);
-    let address = args.next().ok_or("usage: cargo run -p horizon-protocol --example legacy18_probe -- <server:port> <username>")?;
-    let username = args.next().ok_or("missing username")?;
-    let (mut conn, uuid) = connect_login(&address, &username, Duration::from_secs(10), None)?;
-    println!("Connected via protocol 47: {username} UUID {uuid}");
-    println!("Diagnostic only: rendering and playable 1.8 translation are not implemented.");
-    conn.send(&play::client_settings_body("en_US", 8, 0x7f)?)?;
-    let mut has_sky_light = true;
-    let mut current_position = PositionLook { x: 0.0, y: 64.0, z: 0.0,
-        yaw: 0.0, pitch: 0.0, flags: 0 };
-    let mut received_chunks = 0;
-    for _ in 0..128 {
-        let (id, payload) = conn.recv()?;
-        if let Some(value) = keep_alive_id(id, &payload)? {
-            conn.send(&keep_alive_response_body(value))?;
-            continue;
+fn main()->Result<(),Box<dyn std::error::Error>> {
+    let mut args=std::env::args().skip(1);
+    let address=args.next().ok_or(
+        "usage: cargo run -p horizon-protocol --example legacy18_probe -- <host:port> <username>"
+    )?;
+    let username=args.next().ok_or("missing username")?;
+    let (mut conn,uuid)=connect_login(&address,&username,Duration::from_secs(10),None)?;
+    eprintln!("Connected via protocol 47: {username} UUID {uuid}");
+    eprintln!("HEADLESS diagnostic only: gameplay renderer, native 1.8 server and Forge mods are absent.");
+    conn.send(&play::client_settings_body("en_US",8,0x7f)?)?;
+    conn.send(&plugin::client_brand_body("horizon-rust")?)?;
+    let mut game=LegacyGame::default();
+    let mut seen=[0u32;11];
+    for _ in 0..512 {
+        let (id,payload)=conn.recv()?;
+        let output=game.apply(id,&payload)?;
+        for reply in output.replies {
+            conn.send(&reply)?;
         }
-        match id {
-            0x01 => {
-                let join = play::decode_join_game(&payload)?;
-                has_sky_light = join.dimension == 0;
-                println!("Joined entity {} dimension {} gamemode {}", join.entity_id, join.dimension, join.game_mode);
-            }
-            0x08 => {
-                current_position = play::decode_position_look(&payload)?.absolute(current_position);
-                conn.send(&play::position_look_response_body(current_position, false))?;
-                println!("Initial position ({:.1}, {:.1}, {:.1})", current_position.x, current_position.y, current_position.z);
-            }
-            0x21 => {
-                let chunk = play::decode_chunk_data(&payload, has_sky_light)?;
-                received_chunks += 1;
-                println!("Chunk ({}, {}) sections {}", chunk.x, chunk.z, chunk.sections.len());
-            }
-            0x26 => {
-                let chunks = play::decode_chunk_bulk(&payload)?;
-                received_chunks += chunks.len();
-                println!("Chunk bulk: {} columns", chunks.len());
-            }
-            _ => println!("Untranslated PLAY ID {id:#04x} ({} bytes)", payload.len()),
+        let kind=output.kind;
+        let index=match kind {
+            UpdateKind::Joined=>0,
+            UpdateKind::PlayerCorrected=>1,
+            UpdateKind::Chunk=>2,
+            UpdateKind::ChunkBulk=>3,
+            UpdateKind::Block=>4,
+            UpdateKind::Entity=>5,
+            UpdateKind::Inventory=>6,
+            UpdateKind::Chat=>7,
+            UpdateKind::Plugin=>8,
+            UpdateKind::KeepAlive=>9,
+            UpdateKind::Ignored=>10,
+        };
+        seen[index]+=1;
+        match kind {
+            UpdateKind::Joined=>{
+                let join=game.join.as_ref().expect("join processed");
+                println!("Joined: entity {}, dimension {}, gamemode {}",
+                    join.entity_id,join.dimension,join.game_mode);
+            },
+            UpdateKind::PlayerCorrected=>println!(
+                "Position confirmed: {:.2} {:.2} {:.2}",
+                game.player.x,game.player.y,game.player.z,
+            ),
+            UpdateKind::Plugin if game.forge_required=>{
+                eprintln!("FML|HS detected. Forge Java client mods are NOT supported by this test client.");
+            },
+            _=>{},
         }
     }
-    println!("Finished diagnostic: parsed {received_chunks} chunk columns");
+    println!("Diagnostics: chunks={} entities={} windows={} packets={seen:?}",
+        game.columns.len(),game.entities.len(),game.windows.len());
     Ok(())
 }
