@@ -40,4 +40,4 @@ jobs:
       - name: Set up pinned Rust toolchain
         run: rustup show
       - name: Test legacy blocks and light in native renderer chunk storage
-        run: cargo test -p horizon-client-render --lib legacy_chunk -- --nocapture
+        run: cargo test -p horizon-client-render --lib legacy_ -- --nocapture
