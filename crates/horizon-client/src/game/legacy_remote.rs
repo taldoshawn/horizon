@@ -247,7 +247,7 @@ impl Game<'_> {
                     self.mobs.retain(|m|m.id != id as u32);
                 }
             },
-            0x0c|0x0f|0x15|0x18|0x12=>{
+            0x0c|0x0f|0x15|0x16|0x17|0x18|0x19|0x12=>{
                 let id=horizon_protocol::buf::Reader::new(payload).varint()?;
                 let Some(entity)=state.entities.get(&id) else {return Ok(())};
                 let position=[entity.x,entity.y,entity.z];
@@ -262,6 +262,8 @@ impl Game<'_> {
                     (mob.previous_yaw,mob.yaw)=(mob.yaw,entity.yaw);
                     mob.previous_head_pitch=mob.head_pitch;
                     mob.head_pitch=entity.pitch;
+                    mob.previous_head_yaw=mob.head_yaw;
+                    mob.head_yaw=entity.head_yaw;
                 }
             },
             _=>{}
