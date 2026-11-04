@@ -15,7 +15,7 @@ use horizon_protocol::{
     legacy_v1_8::{
         async_session::LegacyWireWorker,
         physics::{ClassicPlayer, CollisionWorld, Controls, Aabb, Vec3 as OldVec3},
-        play::{self,PlayerAction},
+        play::{self,PlayerAction},spawn,
         session::ClientAction,
         state::{LegacyGame, UpdateKind},
     },
@@ -131,6 +131,34 @@ impl CollisionWorld for OldWorldCollision<'_> {
 }
 
 
+/// Legacy 1.8 numeric entity types; this mapping is visual only.
+/// It does not imply compatibility of 26.3 entity AI/data watchers.
+fn legacy_entity_model(kind:spawn::EntityKind)->Option<&'static str>{
+    use spawn::EntityKind;
+    match kind {
+        EntityKind::Player{..}=>Some("minecraft:player"),
+        EntityKind::Mob{type_id}=>Some(match type_id {
+            50=>"minecraft:creeper",51=>"minecraft:skeleton",
+            52=>"minecraft:spider",53=>"minecraft:giant",
+            54=>"minecraft:zombie",55=>"minecraft:slime",
+            56=>"minecraft:ghast",57=>"minecraft:zombified_piglin",
+            58=>"minecraft:enderman",59=>"minecraft:cave_spider",
+            60=>"minecraft:silverfish",61=>"minecraft:blaze",
+            62=>"minecraft:magma_cube",63=>"minecraft:ender_dragon",
+            64=>"minecraft:wither",65=>"minecraft:bat",
+            66=>"minecraft:witch",67=>"minecraft:endermite",
+            68=>"minecraft:guardian",90=>"minecraft:pig",
+            91=>"minecraft:sheep",92=>"minecraft:cow",
+            93=>"minecraft:chicken",94=>"minecraft:squid",
+            95=>"minecraft:wolf",96=>"minecraft:mooshroom",
+            97=>"minecraft:snow_golem",98=>"minecraft:ocelot",
+            99=>"minecraft:iron_golem",100=>"minecraft:horse",
+            101=>"minecraft:rabbit",120=>"minecraft:villager",
+            _=>return None,
+        }),
+    }
+}
+
 impl Game<'_> {
     /// Developer-only switch. A plain Android version selector remains on
     /// the existing public implementation until native 1.8.9 is actually
@@ -196,6 +224,36 @@ impl Game<'_> {
         if let Some(r)=self.renderer.as_mut(){
             r.clear_sections(self.world.layout());
         }
+    }
+    fn sync_native_189_entities(
+        &mut self, packet_id:i32, payload:&[u8],state:&LegacyGame
+    )->Result<()> {
+        match packet_id {
+            0x13=>{
+                for id in play::decode_destroy_entities(payload)? {
+                    self.mobs.retain(|m|m.id != id as u32);
+                }
+            },
+            0x0c|0x0f|0x15|0x18|0x12=>{
+                let id=horizon_protocol::buf::Reader::new(payload).varint()?;
+                let Some(entity)=state.entities.get(&id) else {return Ok(())};
+                let position=[entity.x,entity.y,entity.z];
+                let rotation=[entity.yaw,entity.pitch,entity.yaw];
+                if packet_id==0x0c||packet_id==0x0f {
+                    if let Some(kind)=entity.kind.and_then(legacy_entity_model) {
+                        self.spawn_entity(id,kind,position,rotation);
+                    }
+                }else if let Some(mob)=self.mobs.iter_mut().find(|m|m.id==id as u32){
+                    mob.previous=mob.position;
+                    mob.position=Vec3::new(entity.x,entity.y,entity.z);
+                    (mob.previous_yaw,mob.yaw)=(mob.yaw,entity.yaw);
+                    mob.previous_head_pitch=mob.head_pitch;
+                    mob.head_pitch=entity.pitch;
+                }
+            },
+            _=>{}
+        }
+        Ok(())
     }
     pub(super) fn poll_native_189(&mut self)->Result<()> {
         let Some(mut legacy)=self.legacy_remote.take() else{return Ok(());};
@@ -267,6 +325,9 @@ impl Game<'_> {
                             );
                         }
                     }
+                }
+                if packet.kind==UpdateKind::Entity {
+                    self.sync_native_189_entities(packet.id,&packet.payload,&legacy.state)?;
                 }
                 let mut sink=NativeChunkSink {
                     world:&mut self.world,streaming:&mut self.streaming,
