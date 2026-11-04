@@ -28,7 +28,9 @@ permissions:
   contents: read
 concurrency:
   group: android-dev-${{ github.ref }}
-  cancel-in-progress: true
+  # Preserve ongoing ARM64 dev builds while native-1.8 development commits land.
+  # On main, stale builds may still be cancelled.
+  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
 
 jobs:
   build:
