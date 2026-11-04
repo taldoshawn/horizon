@@ -8305,6 +8305,12 @@ impl Game<'_> {
         if message.is_empty() || !self.chat_abilities().allows(message) {
             return;
         }
+        if self.legacy_remote.is_some() {
+            if let Err(error)=self.native_send_chat(message) {
+                log::warn!("Sending protocol-47 chat: {error}");
+            }
+            return;
+        }
         if let Some(command) = message.strip_prefix('/') {
             self.send_command(command);
         } else {
