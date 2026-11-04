@@ -78,25 +78,28 @@ pub struct Config {
     pub mod_source: crate::shader_catalog::Origin,
 }
 
-/// Pojav-style version selector. Legacy currently uses an external protocol bridge,
-/// not an embedded Minecraft 1.8.9 engine or Java runtime.
+/// Explicit native 1.8.9 opt-in while full gameplay compatibility is still
+/// under development. The launcher must not advertise this as a stable release.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RuntimeMode {
     #[default]
     Native26_3,
+    Native1_8_9Experimental,
     Legacy1_8_9ViaProxy,
 }
 impl RuntimeMode {
     pub fn next(self) -> Self {
         match self {
-            Self::Native26_3 => Self::Legacy1_8_9ViaProxy,
+            Self::Native26_3 => Self::Native1_8_9Experimental,
+            Self::Native1_8_9Experimental => Self::Legacy1_8_9ViaProxy,
             Self::Legacy1_8_9ViaProxy => Self::Native26_3,
         }
     }
     pub fn label(self) -> &'static str {
         match self {
             Self::Native26_3 => "Minecraft 26.3 - native Rust",
+            Self::Native1_8_9Experimental => "Minecraft 1.8.9 - native Rust (WIP)",
             Self::Legacy1_8_9ViaProxy => "Minecraft 1.8.9 server - ViaProxy",
         }
     }
