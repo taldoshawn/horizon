@@ -85,22 +85,23 @@ pub struct Config {
 pub enum RuntimeMode {
     #[default]
     Native26_3,
-    Native1_8_9Experimental,
     Legacy1_8_9ViaProxy,
+    /// Pre-release Rust protocol-47 runtime; not a complete game.
+    Native1_8_9Dev,
 }
 impl RuntimeMode {
     pub fn next(self) -> Self {
         match self {
-            Self::Native26_3 => Self::Native1_8_9Experimental,
-            Self::Native1_8_9Experimental => Self::Legacy1_8_9ViaProxy,
+            Self::Native26_3 => Self::Native1_8_9Dev,
+            Self::Native1_8_9Dev => Self::Legacy1_8_9ViaProxy,
             Self::Legacy1_8_9ViaProxy => Self::Native26_3,
         }
     }
     pub fn label(self) -> &'static str {
         match self {
             Self::Native26_3 => "Minecraft 26.3 - native Rust",
-            Self::Native1_8_9Experimental => "Minecraft 1.8.9 - native Rust (WIP)",
             Self::Legacy1_8_9ViaProxy => "Minecraft 1.8.9 server - ViaProxy",
+            Self::Native1_8_9Dev => "Minecraft 1.8.9 native Rust - EXPERIMENTAL",
         }
     }
 }
