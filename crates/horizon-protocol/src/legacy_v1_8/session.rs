@@ -101,6 +101,7 @@ pub struct LegacySession {
     pub uuid:String,
     pub received_packets:u64,
     pub sent_packets:u64,
+    sent_join_metadata:bool,
 }
 impl LegacySession {
     /// Negotiate protocol 47 (with compression/encryption as requested).
@@ -123,15 +124,15 @@ impl LegacySession {
         username:String,
         uuid:String,
     )->Result<Self>{
-        let mut session=Self {
+        let session=Self {
             connection,
             game:LegacyGame::default(),
             local_player:ClassicPlayer::new(0.0,64.0,0.0),
             username,uuid,
             received_packets:0,sent_packets:0,
+            sent_join_metadata:false,
         };
-        session.send_body(&play::client_settings_body("en_US",8,0x7f)?)?;
-        session.send_body(&plugin::client_brand_body("horizon-rust")?)?;
+        // Vanilla sends C15 settings / MC|Brand only after S01 JoinGame.
         Ok(session)
     }
     fn send_body(&mut self,body:&[u8])->Result<()> {
@@ -161,6 +162,11 @@ impl LegacySession {
             return Err(Error::new(format!("Minecraft 1.8 server disconnected: {reason}")));
         }
         let update=self.game.apply(id,&payload)?;
+        if update.kind==UpdateKind::Joined && !self.sent_join_metadata {
+            self.send_body(&play::client_settings_body("en_US",8,0x7f)?)?;
+            self.send_body(&plugin::client_brand_body("horizon-rust")?)?;
+            self.sent_join_metadata=true;
+        }
         for response in update.replies {self.send_body(&response)?;}
         if update.kind==UpdateKind::PlayerCorrected {
             let p=self.game.player;
