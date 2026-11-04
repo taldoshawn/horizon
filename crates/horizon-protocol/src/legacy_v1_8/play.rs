@@ -86,6 +86,54 @@ pub fn decode_position_look(payload: &[u8]) -> Result<PositionLook> {
     Ok(pos)
 }
 
+/// Clientbound PLAY 0x07 — respawn the world in a different dimension.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Respawn {
+    pub dimension:i32,pub difficulty:u8,pub game_mode:u8,pub world_type:String,
+}
+pub fn decode_respawn(payload:&[u8])->Result<Respawn> {
+    let mut r=Reader::new(payload);
+    let result=Respawn {
+        dimension:r.i32()?,difficulty:r.u8()?,game_mode:r.u8()?,
+        world_type:r.string(16)?,
+    };
+    if !(-1..=1).contains(&result.dimension) {
+        return Err(Error::new("1.8 custom dimension requires modded registry support"));
+    }
+    if result.game_mode>3 || result.difficulty>3 {
+        return Err(Error::new("invalid 1.8 respawn game mode or difficulty"));
+    }
+    ensure_consumed(&r,"respawn")?;
+    Ok(result)
+}
+/// Clientbound PLAY 0x06 — health, hunger and food saturation.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UpdateHealth {
+    pub health:f32,pub food:i32,pub saturation:f32,
+}
+pub fn decode_update_health(payload:&[u8])->Result<UpdateHealth>{
+    let mut r=Reader::new(payload);
+    let result=UpdateHealth {
+        health:r.f32()?,food:r.varint()?,saturation:r.f32()?,
+    };
+    if !result.health.is_finite() || !result.saturation.is_finite()
+        || !(0..=20).contains(&result.food)
+        || result.health < -1024.0 || result.health>1024.0
+        || !(0.0..=20.0).contains(&result.saturation) {
+        return Err(Error::new("invalid 1.8 player health or food data"));
+    }
+    ensure_consumed(&r,"update health")?;
+    Ok(result)
+}
+/// Clientbound PLAY 0x09 — change currently selected quickbar slot.
+pub fn decode_held_item_change(payload:&[u8])->Result<u8>{
+    let mut r=Reader::new(payload);
+    let slot=r.u8()?;
+    if slot>8{return Err(Error::new("invalid 1.8 selected hotbar slot"));}
+    ensure_consumed(&r,"held item change")?;
+    Ok(slot)
+}
+
 /// Movement packet 0x06: respond to the 1.8 position correction (there is NO teleport id).
 /// `position` must have flags already resolved to absolute coordinates.
 pub fn position_look_response_body(position: PositionLook, on_ground: bool) -> Vec<u8> {
@@ -736,6 +784,25 @@ mod tests {
         assert_eq!(changes[0].position, BlockPosition { x: -29, y: 64, z: 69 });
         assert_eq!(changes[1].position, BlockPosition { x: -32, y: 70, z: 79 });
         assert!(decode_multi_block_change(&bulk.data[..bulk.data.len()-1]).is_err());
+    }
+
+    #[test]
+    fn respawn_health_and_server_selected_hotbar_reject_invalid_wire_data(){
+        let mut d=Writer::new();
+        d.i32(-1);d.u8(2);d.u8(0);d.string("default");
+        let respawn=decode_respawn(&d.data).unwrap();
+        assert_eq!(respawn.dimension,-1);
+        d.data[3]=3;
+        assert!(decode_respawn(&d.data).is_err());
+        let mut h=Writer::new();
+        h.f32(18.0);h.varint(17);h.f32(4.0);
+        assert_eq!(decode_update_health(&h.data).unwrap().food,17);
+        let mut bad=Writer::new();
+        bad.f32(f32::NAN);bad.varint(17);bad.f32(4.0);
+        assert!(decode_update_health(&bad.data).is_err());
+        assert_eq!(decode_held_item_change(&[8]).unwrap(),8);
+        assert!(decode_held_item_change(&[9]).is_err());
+        assert!(decode_held_item_change(&[3,4]).is_err());
     }
 
     #[test]
