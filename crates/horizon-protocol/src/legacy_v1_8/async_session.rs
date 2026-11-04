@@ -184,12 +184,10 @@ mod tests {
             let (socket,_)=listener.accept().unwrap();
             socket.set_read_timeout(Some(Duration::from_secs(4))).unwrap();
             let mut peer=Connection::from_stream(socket).unwrap();
-            let (settings,_)=peer.recv().unwrap();
-            let (brand,_)=peer.recv().unwrap();
-            assert_eq!((settings,brand),(0x15,0x17));
+            // Before JoinGame the client must not send settings/brand,
+            // yet a keepalive still needs an immediate reply without poll().
             let mut keep=Writer::new();keep.varint(0);keep.varint(777);
             peer.send(&keep.data).unwrap();
-            // No client.poll() has happened yet. Reply must still arrive.
             let (id,data)=peer.recv().unwrap();
             assert_eq!(id,0);
             assert_eq!(Reader::new(&data).varint().unwrap(),777);
@@ -197,6 +195,9 @@ mod tests {
             join.varint(1);join.i32(5);join.u8(0);join.i8(0);
             join.u8(2);join.u8(20);join.string("default");join.bool(false);
             peer.send(&join.data).unwrap();
+            let (settings,_)=peer.recv().unwrap();
+            let (brand,_)=peer.recv().unwrap();
+            assert_eq!((settings,brand),(0x15,0x17));
             let (id,attack)=peer.recv().unwrap();
             assert_eq!(id,2);
             let mut r=Reader::new(&attack);
