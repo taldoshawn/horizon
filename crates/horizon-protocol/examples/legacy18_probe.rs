@@ -23,9 +23,16 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
     eprintln!("HEADLESS diagnostic only: gameplay renderer, native 1.8 server and Forge mods are absent.");
     // Vanilla 1.8 sends ClientSettings/Brand only *after* JoinGame (S01).
     let mut game=LegacyGame::default();
-    let mut seen=[0u32;11];
+    let mut seen=[0u32;14];
     for _ in 0..512 {
-        let (id,payload)=conn.recv()?;
+        let (id,payload)=conn.recv().map_err(|error| {
+            eprintln!("1.8 stream ended: events={seen:?}, columns={}, entities={}",
+                game.columns.len(),game.entities.len());
+            error
+        })?;
+        if seen.iter().sum::<u32>() < 32 {
+            eprintln!("1.8 clientbound packet: 0x{id:02x}, bytes={}",payload.len());
+        }
         let output=game.apply(id,&payload)?;
         for reply in output.replies {
             conn.send(&reply)?;
@@ -43,6 +50,9 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
             UpdateKind::Plugin=>8,
             UpdateKind::KeepAlive=>9,
             UpdateKind::Ignored=>10,
+            UpdateKind::Respawn=>11,
+            UpdateKind::Health=>12,
+            UpdateKind::Hotbar=>13,
         };
         seen[index]+=1;
         match kind {
