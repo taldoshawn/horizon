@@ -14,6 +14,7 @@ pub mod inventory;
 pub mod plugin;
 pub mod world;
 pub mod state;
+pub mod physics;
 
 use std::time::Duration;
 
