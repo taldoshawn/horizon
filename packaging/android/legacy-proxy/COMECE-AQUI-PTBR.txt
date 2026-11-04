@@ -1,0 +1,40 @@
+HORIZON ANDROID -> SERVIDOR JAVA 1.8.9
+====================================
+
+Esta é uma ponte de compatibilidade chamada ViaProxy, NÃO um APK de
+Horizon 1.8.9 independente. O Horizon continua rodando o motor 26.3;
+o proxy traduz a conexão para o servidor 1.8.9.
+
+Requisitos: Horizon Android instalado, Termux oficial (F-Droid/GitHub),
+conexão com a Internet, armazenamento disponível, memória suficiente.
+
+PASSO A PASSO NO CELULAR
+
+1. Extraia este ZIP (pasta horizon-189) para Downloads do celular.
+2. Abra Termux, digite termux-setup-storage, permita o acesso.
+3. Digite no Termux:
+
+   bash ~/storage/downloads/horizon-189/start-termux.sh SERVIDOR:25565
+
+   Troque SERVIDOR:25565 pelo IP/host e porta do seu servidor 1.8.9.
+4. No primeiro uso, o script instala Java 25 + bibliotecas, baixa
+   o ViaProxy oficial e configura a porta local. Acompanhe os logs.
+5. MANTENHA o Termux rodando. Abra o Horizon Android, Multiplayer,
+   Conexão Direta e entre no endereço: 127.0.0.1:25568
+6. Para encerrar o proxy, volte ao Termux e pressione Ctrl+C.
+
+Se o proxy não iniciar: copie a mensagem de erro do Termux para
+analisarmos. A execução real ainda não foi validada no celular.
+
+Servidores com conta premium/online-mode precisam de autenticação
+separada no ViaProxy usando a sua própria conta original.
+NÃO compartilhe senhas, tokens, saves.json ou credenciais com ninguém.
+
+Se o Android matar o Termux em segundo plano, desative a otimização
+de bateria desse app. Isso e o consumo de RAM podem impedir o uso
+simultâneo em celulares mais fracos.
+
+Fontes oficiais:
+https://github.com/ViaVersion/ViaProxy
+https://github.com/termux/termux-app
+https://github.com/Vasysik/horizon-android
