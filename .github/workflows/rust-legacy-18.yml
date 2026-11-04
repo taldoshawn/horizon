@@ -6,6 +6,10 @@ on:
     paths:
       - 'crates/horizon-protocol/**'
       - 'crates/horizon-client-render/**'
+      - 'crates/horizon-client/src/game.rs'
+      - 'crates/horizon-client/src/game/legacy_remote.rs'
+      - 'crates/horizon-client/src/game/remote.rs'
+      - 'crates/horizon-client/src/lib.rs'
       - 'crates/horizon-world/src/datafix/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -43,3 +47,17 @@ jobs:
         run: |
           cargo test -p horizon-client-render --lib legacy_chunk::tests -- --nocapture
           cargo test -p horizon-client-render --lib legacy_world::tests -- --nocapture
+
+
+  native-game-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up pinned Rust toolchain
+        run: rustup show
+      - name: Compile real Horizon game with protocol-47 integration
+        run: cargo check -p horizon-client --bin horizon-client
