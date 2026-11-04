@@ -281,6 +281,12 @@ impl CollisionWorld for OldWorldCollision<'_> {
 
     /// Tick only protocol-47 inputs when in 1.8 mode. Never run 26.3 world
     /// simulation or autosave for these worlds.
+    pub(super) fn native_send_chat(&self,line:&str)->Result<()> {
+        if let Some(worker)=self.legacy_remote.as_ref().and_then(|l|l.worker.as_ref()) {
+            worker.send_action(ClientAction::Chat(line))?;
+        }
+        Ok(())
+    }
     pub(super) fn tick_native_189(&mut self)->Result<()> {
         self.ticks=self.ticks.saturating_add(1);
         let playing=self.screen==Screen::Playing && !self.dialog_open();
