@@ -94,6 +94,13 @@ impl LegacyBlockMap {
     pub fn override_state(&mut self,old:u16,renderer:u32) {
         self.ids[old as usize]=renderer;
     }
+    #[cfg(test)]
+    pub(crate) fn from_registry_test(pairs:&[(u16,u32)])->Self {
+        let mut ids=Box::new([0u32;LEGACY_STATE_CAPACITY]);
+        for (old,new_id) in pairs {ids[*old as usize]=*new_id;}
+        Self {ids,air:0,quality:MappingQuality::default()}
+    }
+
 }
 fn nibble(bytes:&[u8],index:usize)->u8 {
     if index&1==0 {bytes[index>>1]&15} else {bytes[index>>1]>>4}
@@ -188,8 +195,8 @@ mod tests {
         states[idx]=16;
         let mut block_light=vec![0u8;2048];
         let mut sky_light=vec![0u8;2048];
-        block_light[idx/2]=0xA0;
-        sky_light[idx/2]=0xB0;
+        block_light[idx/2]=0x0A;
+        sky_light[idx/2]=0x0B;
         let old=OldColumn{
             sections:(0..16).map(|sy|if sy==0 {
                 Some(OldSection {
