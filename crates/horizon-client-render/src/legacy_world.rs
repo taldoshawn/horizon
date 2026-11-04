@@ -125,7 +125,7 @@ impl LegacyRenderSync {
                     .map_err(|e|e.to_string())?;
                 let pos=p.position;
                 sink.block_changed(pos.x,pos.y,pos.z,
-                    self.block_map.renderer_state(p.state_id as u16))?;
+                    self.block_map.renderer_state(u16::try_from(p.state_id).map_err(|_| "1.8 block state outside u16 range".to_owned())?))?;
                 result.blocks+=1;
             }
             (UpdateKind::Block,0x22)=>{
@@ -133,7 +133,7 @@ impl LegacyRenderSync {
                     .map_err(|e|e.to_string())? {
                     let pos=p.position;
                     sink.block_changed(pos.x,pos.y,pos.z,
-                        self.block_map.renderer_state(p.state_id as u16))?;
+                        self.block_map.renderer_state(u16::try_from(p.state_id).map_err(|_| "1.8 block state outside u16 range".to_owned())?))?;
                     result.blocks+=1;
                 }
             }
