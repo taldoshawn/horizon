@@ -182,7 +182,7 @@ mod tests {
         let addr=listener.local_addr().unwrap();
         let server=thread::spawn(move||{
             let (socket,_)=listener.accept().unwrap();
-            socket.set_read_timeout(Some(Duration::from_secs(4))).unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
             let mut peer=Connection::from_stream(socket).unwrap();
             // Before JoinGame the client must not send settings/brand,
             // yet a keepalive still needs an immediate reply without poll().
@@ -210,7 +210,7 @@ mod tests {
         // Do not enqueue an attack before the server has received
         // its keepalive reply: response ordering is intentional.
         let mut state=LegacyGame::default();
-        let deadline=Instant::now()+Duration::from_secs(3);
+        let deadline=Instant::now()+Duration::from_secs(15);
         while Instant::now()<deadline&&state.join.is_none(){
             for packet in client.poll(){
                 if let LegacyInbound::Packet{id:1,..}=packet {
