@@ -63,7 +63,10 @@ def download_game(version, directory):
     # and client/server jar hashes are checked against the engine pins below.
     versions = directory / 'versions' / version
     manifest_path = versions / f'{version}.json'
-    lab.download(entry['url'], manifest_path, entry['sha1'])
+    # Pin the original Mojang manifest: the live version catalog can republish 26.3
+    # with a SHA that this engine deliberately does not recognize.
+    original = f"https://piston-meta.mojang.com/v1/packages/{pins['manifest_sha1']}/{version}.json"
+    lab.download(original, manifest_path, pins['manifest_sha1'])
     manifest = json.loads(manifest_path.read_text())
     files = []
     for side in ['client', 'server']:
