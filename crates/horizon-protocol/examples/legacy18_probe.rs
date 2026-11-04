@@ -16,7 +16,9 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
         "usage: cargo run -p horizon-protocol --example legacy18_probe -- <host:port> <username>"
     )?;
     let username=args.next().ok_or("missing username")?;
+    let expect_world=matches!(args.next().as_deref(),Some("--expect-world"));
     let (mut conn,uuid)=connect_login(&address,&username,Duration::from_secs(10),None)?;
+    conn.reader.set_read_timeout(Some(Duration::from_secs(40)))?;
     eprintln!("Connected via protocol 47: {username} UUID {uuid}");
     eprintln!("HEADLESS diagnostic only: gameplay renderer, native 1.8 server and Forge mods are absent.");
     conn.send(&play::client_settings_body("en_US",8,0x7f)?)?;
@@ -59,8 +61,17 @@ fn main()->Result<(),Box<dyn std::error::Error>> {
             },
             _=>{},
         }
+        if expect_world && seen[0]>0 && seen[1]>0 && !game.columns.is_empty() {
+            break;
+        }
     }
     println!("Diagnostics: chunks={} entities={} windows={} packets={seen:?}",
         game.columns.len(),game.entities.len(),game.windows.len());
+    if expect_world && (seen[0]==0 || seen[1]==0 || game.columns.is_empty()) {
+        return Err(format!(
+            "real Minecraft 1.8.9 world check failed: join={}, corrections={}, columns={}",
+            seen[0],seen[1],game.columns.len()
+        ).into());
+    }
     Ok(())
 }
