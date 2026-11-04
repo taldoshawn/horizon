@@ -742,7 +742,7 @@ impl Game<'_> {
             return Ok(());
         }
         self.join_world_rest()?;
-        let connection_result = if !lan && cookies.is_none() && Self::native_189_requested() {
+        let connection_result = if !lan && cookies.is_none() && self.native_189_requested() {
             self.connect_native_189(address, name)
         } else {
             self.join_server(address, name, None, cookies, lan)
