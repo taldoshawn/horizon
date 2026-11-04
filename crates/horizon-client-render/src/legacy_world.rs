@@ -99,7 +99,7 @@ impl LegacyRenderSync {
     )->Result<RenderSyncResult,String>{
         let mut result=RenderSyncResult::default();
         match (packet.kind,packet.id) {
-            (UpdateKind::Joined,0x01)=>{
+            (UpdateKind::Joined,0x01)|(UpdateKind::Respawn,0x07)=>{
                 self.has_skylight=state.join.as_ref().is_none_or(|j|j.dimension==0);
                 result.reset_required=true;
             }
