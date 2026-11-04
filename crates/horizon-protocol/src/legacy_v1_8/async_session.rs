@@ -50,10 +50,12 @@ impl LegacyWireWorker {
         Ok((Self::after_login(connection)?,uuid))
     }
     /// For tested or already authenticated protocol-47 connections.
-    pub fn after_login(mut connection:Connection)->Result<Self>{
-        connection.send(&play::client_settings_body("en_US",8,0x7f)?)?;
-        connection.send(&plugin::client_brand_body("horizon-rust")?)?;
-
+    pub fn after_login(connection:Connection)->Result<Self>{
+        // Vanilla client settings/brand are sent only after S01 JoinGame.
+        // Sending PLAY packets during the login→play transition can cause
+        // an unmodified 1.8.9 server to close the connection.
+        let settings=play::client_settings_body("en_US",8,0x7f)?;
+        let brand=plugin::client_brand_body("horizon-rust")?;
         let (mut reader,mut writer)=connection.split();
         reader.set_read_timeout(Some(Duration::from_secs(30)))?;
         let close=reader.closer()?;
@@ -85,6 +87,11 @@ impl LegacyWireWorker {
                         break;
                     }
                 };
+                if id==0x01 {
+                    // JoinGame is the point at which vanilla sends these.
+                    if rx_commands.send(settings.clone()).is_err(){break;}
+                    if rx_commands.send(brand.clone()).is_err(){break;}
+                }
                 // Keepalives must not wait for the renderer or Android GC.
                 match keep_alive_id(id,&payload){
                     Ok(Some(value))=>{
