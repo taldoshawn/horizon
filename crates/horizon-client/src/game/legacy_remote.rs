@@ -14,7 +14,8 @@ use horizon_protocol::{
     Result as ProtocolResult, Error as ProtocolError,
     legacy_v1_8::{
         async_session::{LegacyWireWorker, LegacyInbound},
-        physics::ClassicPlayer,
+        physics::{ClassicPlayer, CollisionWorld, Controls, Aabb, Vec3 as OldVec3},
+        play::{self,PlayerAction},
         session::ClientAction,
         state::{LegacyGame, UpdateKind},
     },
@@ -26,6 +27,8 @@ pub(super) struct NativeLegacy {
     state: LegacyGame,
     renderer: LegacyRenderSync,
     motion: ClassicPlayer,
+    last_sprint:bool,
+    last_sneak:bool,
 }
 impl NativeLegacy {
     fn biome_map(biomes:&horizon_client::biome::Biomes)->[u16;256] {
@@ -76,6 +79,8 @@ impl NativeLegacy {
                 Self::biome_map(biomes)
             ),
             motion:ClassicPlayer::new(0.0,64.0,0.0),
+            last_sprint:false,
+            last_sneak:false,
         }
     }
 }
@@ -213,18 +218,116 @@ impl Game<'_> {
         self.legacy_remote=Some(legacy);
         result
     }
+/// Collision inputs from the 1.8 numeric chunk state. Unlike a modern
+/// BlockStateId, the ID and four metadata bits are read from the *old* world.
+/// Full parity needs legacy neighbor-dependent shapes, piston motion, entity
+/// collisions, fluids and on-block speed effects.
+struct OldWorldCollision<'a> { game:&'a LegacyGame }
+impl CollisionWorld for OldWorldCollision<'_> {
+    fn boxes(&self,swept:Aabb)->Vec<Aabb>{
+        let (min_x,max_x)=(swept.min.x.floor() as i32,swept.max.x.ceil() as i32);
+        let (min_y,max_y)=(swept.min.y.floor() as i32,swept.max.y.ceil() as i32);
+        let (min_z,max_z)=(swept.min.z.floor() as i32,swept.max.z.ceil() as i32);
+        let mut out=Vec::new();
+        for y in min_y.max(0)..max_y.min(256) {
+            for z in min_z..max_z {
+                for x in min_x..max_x {
+                    let Some((id,meta))=self.game.block(x,y,z) else{continue;};
+                    // Transparent, fluid, decorative and climbing blocks
+                    // must not become solid cubes.
+                    if matches!(id,0|6|8|9|10|11|27|28|30|31|32|37|38|39|40|50|
+                        51|55|59|63|65|66|68|69|70|72|75|76|77|83|90|93|94|
+                        106|111|115|127|131|132|140|141|142|143|147|148|
+                        149|150|151|157|175) {
+                        continue;
+                    }
+                    let (bottom,top) = match id {
+                        // Slab metadata bit 3: upper half.
+                        44|126|182|205=>if meta&8!=0 {(0.5,1.0)}else{(0.0,0.5)},
+                        26=>(0.0,0.5625), // bed
+                        60|208=>(0.0,0.9375), // farmland / grass path
+                        78=>(0.0,(f64::from(meta)+1.0)/8.0), // snow layers
+                        88=>(0.0,0.875), // soul sand
+                        171=>(0.0,0.0625), // carpet
+                        85|113|139|188|189|190|191|192=>(0.0,1.5),
+                        _=>(0.0,1.0),
+                    };
+                    let block= Aabb {
+                        min:OldVec3::new(f64::from(x),f64::from(y)+bottom,f64::from(z)),
+                        max:OldVec3::new(f64::from(x)+1.0,f64::from(y)+top,f64::from(z)+1.0),
+                    };
+                    out.push(block);
+                }
+            }
+        }
+        out
+    }
+}
+
     /// Tick only protocol-47 inputs when in 1.8 mode. Never run 26.3 world
     /// simulation or autosave for these worlds.
     pub(super) fn tick_native_189(&mut self)->Result<()> {
         self.ticks=self.ticks.saturating_add(1);
+        let playing=self.screen==Screen::Playing && !self.dialog_open();
+        let stick=self.pad_move();
+        let held=|key|playing && self.keys.contains(&key);
+        let keys=Keys {
+            forward:held(KeyCode::KeyW),backward:held(KeyCode::KeyS),
+            left:held(KeyCode::KeyA),right:held(KeyCode::KeyD),
+            jump:held(KeyCode::Space),shift:held(KeyCode::ShiftLeft),
+            sprint:held(KeyCode::ControlLeft),analog:None,
+        }.with_stick(stick.filter(|_|playing));
         let Some(legacy)=self.legacy_remote.as_mut() else{return Ok(())};
         if self.player.is_none(){return Ok(())}
         let Some(worker)=legacy.worker.as_ref() else{return Ok(())};
-        let p=self.player.as_ref().expect("checked");
+        let movement=keys.direction();
+        // The old network state, not a modern 26.3 registry, supplies
+        // collision blocks. The exact historic block-shape table still needs
+        // independent 1.8 parity testing before any public release.
+        let at=legacy.motion.feet;
+        if !legacy.state.columns.contains_key(&(
+            (at.x.floor() as i32).div_euclid(16),
+            (at.z.floor() as i32).div_euclid(16)
+        )) {
+            worker.send_action(ClientAction::OnGround(false))?;
+            return Ok(());
+        }
+        legacy.motion.yaw=f64::from(self.yaw);
+        legacy.motion.pitch=f64::from(self.pitch);
+        legacy.motion.tick(Controls {
+            forward:f64::from(movement[1]),
+            strafe:f64::from(movement[0]),
+            jump:keys.jump,sprint:keys.sprint,sneak:keys.shift,
+        },&OldWorldCollision{game:&legacy.state})?;
+        let id=legacy.state.join.as_ref().map(|j|j.entity_id);
+        if let Some(id)=id {
+            if legacy.motion.sprinting!=legacy.last_sprint {
+                let action=if legacy.motion.sprinting {
+                    PlayerAction::StartSprinting
+                }else{PlayerAction::StopSprinting};
+                worker.send_body(play::player_action_body(id,action,0)?)?;
+                legacy.last_sprint=legacy.motion.sprinting;
+            }
+            if keys.shift!=legacy.last_sneak {
+                let action=if keys.shift {
+                    PlayerAction::StartSneaking
+                }else{PlayerAction::StopSneaking};
+                worker.send_body(play::player_action_body(id,action,0)?)?;
+                legacy.last_sneak=keys.shift;
+            }
+        }
+        let feet=legacy.motion.feet;
+        self.previous_position=self.player.as_ref().expect("checked").position;
+        if let Some(p)=self.player.as_mut() {
+            p.position=Vec3::new(feet.x,feet.y,feet.z);
+            p.velocity=Vec3::new(
+                legacy.motion.velocity.x,legacy.motion.velocity.y,legacy.motion.velocity.z
+            );
+            p.yaw=self.yaw;p.pitch=self.pitch;
+        }
         worker.send_action(ClientAction::PositionLook {
-            x:p.position.x,y:p.position.y,z:p.position.z,
-            yaw:self.yaw,pitch:self.pitch,
-            on_ground:p.on_ground,
+            x:feet.x,y:feet.y,z:feet.z,yaw:self.yaw,pitch:self.pitch,
+            on_ground:legacy.motion.on_ground,
         })?;
         Ok(())
     }
