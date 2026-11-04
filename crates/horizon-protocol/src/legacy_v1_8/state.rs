@@ -69,13 +69,13 @@ pub struct TrackedEntity {
     pub id:i32,
     pub kind:Option<spawn::EntityKind>,
     pub x:f64,pub y:f64,pub z:f64,
-    pub yaw:f32,pub pitch:f32,
+    pub yaw:f32,pub pitch:f32,pub head_yaw:f32,
     pub vx:f64,pub vy:f64,pub vz:f64,
     pub on_ground:bool,
 }
 impl TrackedEntity {
     fn new(id:i32)->Self {
-        Self{id,kind:None,x:0.0,y:0.0,z:0.0,yaw:0.0,pitch:0.0,vx:0.0,vy:0.0,vz:0.0,on_ground:false}
+        Self{id,kind:None,x:0.0,y:0.0,z:0.0,yaw:0.0,pitch:0.0,head_yaw:0.0,vx:0.0,vy:0.0,vz:0.0,on_ground:false}
     }
 }
 #[derive(Debug,Clone,PartialEq,Eq)]
@@ -225,7 +225,7 @@ impl LegacyGame {
                 self.update_entity(spawned.entity_id,|entity|{
                     entity.kind=Some(spawned.kind);
                     entity.x=spawned.x;entity.y=spawned.y;entity.z=spawned.z;
-                    entity.yaw=spawned.yaw;entity.pitch=spawned.pitch;
+                    entity.yaw=spawned.yaw;entity.pitch=spawned.pitch;entity.head_yaw=spawned.yaw;
                     entity.vx=spawned.velocity_x;
                     entity.vy=spawned.velocity_y;
                     entity.vz=spawned.velocity_z;
@@ -245,6 +245,26 @@ impl LegacyGame {
                     entity.x+=m.dx;entity.y+=m.dy;entity.z+=m.dz;
                     entity.on_ground=m.on_ground;
                 });
+                UpdateKind::Entity
+            },
+            0x16 => {
+                let m=play::decode_entity_look(payload)?;
+                self.update_entity(m.entity_id,|entity|{
+                    entity.yaw=m.yaw;entity.pitch=m.pitch;entity.on_ground=m.on_ground;
+                });
+                UpdateKind::Entity
+            },
+            0x17 => {
+                let m=play::decode_entity_look_move(payload)?;
+                self.update_entity(m.entity_id,|entity|{
+                    entity.x+=m.dx;entity.y+=m.dy;entity.z+=m.dz;
+                    entity.yaw=m.yaw;entity.pitch=m.pitch;entity.on_ground=m.on_ground;
+                });
+                UpdateKind::Entity
+            },
+            0x19 => {
+                let m=play::decode_entity_head_look(payload)?;
+                self.update_entity(m.entity_id,|entity|entity.head_yaw=m.yaw);
                 UpdateKind::Entity
             },
             0x18 => {
@@ -349,6 +369,24 @@ mod tests {
         assert_eq!(ack.replies[0],[15,1,0,4,0]);
         let keep=state.apply(0,&[0x2c]).unwrap();
         assert_eq!(keep.replies[0],[0,0x2c]);
+    }
+    #[test]
+    fn entity_look_move_and_head_yaw_update_tracked_state() {
+        let mut world=LegacyGame::default();
+        let mut mob=Writer::new();
+        // Entity look packets may arrive after a separately handled spawn.
+        let mut m=Writer::new();
+        m.varint(21);m.i8(32);m.i8(-8);m.i8(0);
+        m.u8(64);m.u8(16);m.bool(true);
+        assert_eq!(world.apply(0x17,&m.data).unwrap().kind,UpdateKind::Entity);
+        let tracked=world.entities.get(&21).unwrap();
+        assert_eq!((tracked.x,tracked.y,tracked.yaw,tracked.on_ground),(1.0,-0.25,90.0,true));
+        mob.varint(21);mob.u8(32);mob.u8(0);mob.bool(false);
+        world.apply(0x16,&mob.data).unwrap();
+        assert_eq!(world.entities[&21].yaw,45.0);
+        let mut head=Writer::new();head.varint(21);head.u8(128);
+        world.apply(0x19,&head.data).unwrap();
+        assert_eq!(world.entities[&21].head_yaw,180.0);
     }
     #[test]
     fn spawn_player_then_relative_move_updates_absolute_coordinates() {
