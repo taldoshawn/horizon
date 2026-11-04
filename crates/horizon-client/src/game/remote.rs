@@ -742,7 +742,12 @@ impl Game<'_> {
             return Ok(());
         }
         self.join_world_rest()?;
-        if let Err(error) = self.join_server(address, name, None, cookies, lan) {
+        let connection_result = if !lan && cookies.is_none() && Self::native_189_requested() {
+            self.connect_native_189(address, name)
+        } else {
+            self.join_server(address, name, None, cookies, lan)
+        };
+        if let Err(error) = connection_result {
             log::warn!("Horizon: could not join server: {error}");
             if self.title.is_none() {
                 self.title = Some(
@@ -1058,6 +1063,7 @@ impl Game<'_> {
             return self.begin_closing_save(false);
         }
         self.finish_perf();
+        self.legacy_remote = None;
         if reason.is_none() {
             // Leaving on purpose: nothing for auto-reconnect to retry.
             self.extras_left();
