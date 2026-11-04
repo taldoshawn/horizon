@@ -168,6 +168,65 @@ mod tests {
     }
 
     #[test]
+    fn network_worker_to_native_render_storage_without_proxy() {
+        use horizon_protocol::{
+            connection::Connection,
+            legacy_v1_8::{async_session::{LegacyWireWorker,LegacyInbound},state::LegacyGame},
+        };
+        use std::{net::TcpListener,thread,time::{Duration,Instant}};
+        let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr=listener.local_addr().unwrap();
+        let server=thread::spawn(move||{
+            let (socket,_)=listener.accept().unwrap();
+            let mut conn=Connection::from_stream(socket).unwrap();
+            let (settings,_)=conn.recv().unwrap();
+            let (brand,_)=conn.recv().unwrap();
+            assert_eq!((settings,brand),(0x15,0x17));
+            let mut join=Writer::new();
+            join.varint(1);join.i32(11);join.u8(0);join.i8(0);
+            join.u8(2);join.u8(20);join.string("default");join.bool(false);
+            conn.send(&join.data).unwrap();
+
+            let mut data=vec![0u8;8192+2048+2048+256];
+            data[0]=16;data[8192+2048..8192+2048+2048].fill(255);
+            data[8192+2048+2048..].fill(1);
+            let mut chunk=Writer::new();
+            chunk.varint(0x21);
+            chunk.i32(0);chunk.i32(0);chunk.bool(true);chunk.u16(1);
+            chunk.byte_array(&data);
+            conn.send(&chunk.data).unwrap();
+            let mut update=Writer::new();
+            update.varint(0x23);
+            update.i64(BlockPosition{x:0,y:0,z:0}.to_wire().unwrap());
+            update.varint(32);
+            conn.send(&update.data).unwrap();
+        });
+        let stream=std::net::TcpStream::connect(addr).unwrap();
+        let client=LegacyWireWorker::after_login(
+            Connection::from_stream(stream).unwrap()).unwrap();
+        let mut state=LegacyGame::default();
+        let mut map=[0u16;256];map[1]=7;
+        let mut visual=LegacyRenderSync::new(
+            LegacyBlockMap::from_registry_test(&[(16,1010),(32,2020)]),map
+        );
+        let mut sink=MockSink::default();
+        let until=Instant::now()+Duration::from_secs(4);
+        while sink.blocks.is_empty()&&Instant::now()<until {
+            for packet in client.poll(){
+                if matches!(packet,LegacyInbound::Packet{..}) {
+                    let received=client.apply(packet,&mut state).unwrap();
+                    visual.apply(&received,&state,&mut sink).unwrap();
+                }
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(sink.columns.len(),1);
+        assert_eq!(sink.columns[0].get(0,0,0),1010);
+        assert_eq!(sink.blocks,vec![(0,0,0,2020)]);
+        server.join().unwrap();
+    }
+
+    #[test]
     fn packet_47_chunk_data_is_mapped_to_native_renderer_and_block_deltas() {
         let palette=LegacyBlockMap::from_registry_test(&[(16,413),(32,429)]);
         let mut biomes=[0u16;256];biomes[1]=9;
