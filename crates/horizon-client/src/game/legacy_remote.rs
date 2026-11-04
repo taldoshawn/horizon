@@ -438,6 +438,44 @@ impl Game<'_> {
         true
     }
 
+    /// One classic right-click from the existing touch/mouse interaction
+    /// surface. Block changes and container opens must come from the server;
+    /// never run modern local placement/loot on a 1.8 world.
+    pub(super) fn native_189_use_hand(&mut self,hit:Option<&Hit>)->Result<bool>{
+        let Some(legacy)=self.legacy_remote.as_ref() else{return Ok(false)};
+        let Some(worker)=legacy.worker.as_ref() else{return Ok(false)};
+        let selected=self.selected.min(8);
+        let held=legacy.state.windows.get(&0).and_then(|w|
+            w.slots.get(36+selected)).and_then(|s|s.as_ref());
+        // Sword blocking is a *held* use action; the 20 TPS input loop
+        // sends its C08 start and C07 release without duplicate clicks.
+        if held.is_some_and(|item|
+            matches!(item.numeric_id,267|268|272|276|283)) {
+            return Ok(true);
+        }
+        if let Some(hit)=hit {
+            let face=match hit.face {
+                [0,-1,0]=>0,[0,1,0]=>1,
+                [0,0,-1]=>2,[0,0,1]=>3,
+                [-1,0,0]=>4,[1,0,0]=>5,
+                _=>return Ok(false),
+            };
+            let point=std::array::from_fn(|i|{
+                ((hit.point[i]-f64::from(hit.pos[i])).clamp(0.0,0.999)*16.0)
+                    .floor() as u8
+            });
+            worker.send_action(ClientAction::Place{
+                position:play::BlockPosition{
+                    x:hit.pos[0],y:hit.pos[1],z:hit.pos[2]
+                },face,item:held,cursor:point,
+            })?;
+        }else if held.is_some(){
+            // Right-click the air (bows, consumables and throwable items).
+            worker.send_action(ClientAction::BlockSword(held))?;
+        }else{return Ok(false);}
+        Ok(true)
+    }
+
     pub(super) fn native_send_chat(&self,line:&str)->Result<()> {
         if let Some(worker)=self.legacy_remote.as_ref().and_then(|l|l.worker.as_ref()) {
             worker.send_action(ClientAction::Chat(line))?;
