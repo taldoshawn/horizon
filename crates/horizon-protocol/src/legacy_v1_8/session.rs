@@ -74,6 +74,17 @@ impl ClientAction<'_> {
     }
 }
 
+
+/// A gameplay packet after the 1.8 state model has processed it.
+/// Retaining the exact 1.8 wire bytes allows a renderer adapter to update
+/// the right chunks without re-decoding modern (26.3) packet formats.
+#[derive(Debug)]
+pub struct ReceivedLegacy {
+    pub id:i32,
+    pub payload:Vec<u8>,
+    pub kind:UpdateKind,
+}
+
 /// A live protocol-47 session, intended for use by a networking worker.
 ///
 /// Do not move its connection onto a UI/render thread: recv() blocks.
@@ -134,10 +145,10 @@ impl LegacySession {
         }
         Ok(())
     }
-    /// Returns one update *after* applying it to the authoritative world.
-    /// Keep-alives and position confirmations go out immediately.
-    /// Spawn/position events need to be forwarded by the game loop.
-    pub fn receive_one(&mut self)->Result<UpdateKind>{
+    /// Read one packet, apply it to the authoritative world, and preserve
+    /// its original protocol-47 bytes for the renderer/game loop. The
+    /// caller owns the Vec and must bound its render/update queue on Android.
+    pub fn receive_one_packet(&mut self)->Result<ReceivedLegacy>{
         let (id,payload)=self.connection.recv()?;
         self.received_packets=self.received_packets.saturating_add(1);
         if id==0x40 {
@@ -160,7 +171,13 @@ impl LegacySession {
                 )?;
             }
         }
-        Ok(update.kind)
+        Ok(ReceivedLegacy { id, payload, kind:update.kind })
+    }
+    /// Convenience API when a diagnostic needs only the event type.
+    /// The real native renderer must use receive_one_packet(), since its
+    /// block/lighting adapter needs the exact original packet payload.
+    pub fn receive_one(&mut self)->Result<UpdateKind>{
+        Ok(self.receive_one_packet()?.kind)
     }
     /// Set the read timeout from the network worker to allow worker shutdown.
     pub fn set_read_timeout(&mut self,timeout:Duration)->Result<()> {
