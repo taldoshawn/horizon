@@ -58,7 +58,8 @@ jobs:
           from pathlib import Path
           value = os.environ.get('DEV_KEYSTORE', '')
           if not value:
-              raise SystemExit('Set ANDROID_DEV_KEYSTORE_BASE64 first; see docs/android-dev-builds.md')
+              print('No signing secret configured; android_build.py will create an ephemeral CI signing key.')
+              raise SystemExit(0)
           path = Path('.local/android/debug.keystore')
           path.parent.mkdir(parents=True, exist_ok=True)
           path.write_bytes(base64.b64decode(value, validate=True))
