@@ -213,7 +213,9 @@ mod tests {
         }
         assert_eq!(state.join.as_ref().unwrap().entity_id,5);
         client.send_action(ClientAction::Attack(10)).unwrap();
-        drop(client);
+        // Wait for the write worker to finish; closing the TCP connection
+        // before the worker drains its queue would race with the assertion.
         server.join().unwrap();
+        drop(client);
     }
 }
