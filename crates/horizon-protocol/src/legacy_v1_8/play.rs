@@ -585,6 +585,25 @@ pub fn player_action_body(entity_id:i32,action:PlayerAction,jump_boost:i32)->Res
 pub fn swing_arm_body() -> Vec<u8> { vec![0x0a] }
 
 
+/// Serverbound PLAY 0x08 — right click a block, opening a legacy container
+/// or placing an item. The server remains authoritative for resulting blocks.
+/// Face is 0..5; fractional cursor offsets are units of 1/16 block.
+pub fn place_block_body(
+    position:BlockPosition,face:u8,
+    item:Option<&super::inventory::ItemStack>,
+    cursor:[u8;3],
+)->Result<Vec<u8>> {
+    if face>5 || cursor.iter().any(|&v|v>15) {
+        return Err(Error::new("invalid 1.8 placement face or cursor"));
+    }
+    let mut w=Writer::new();
+    w.varint(0x08);w.i64(position.to_wire()?);
+    w.u8(face);
+    super::inventory::write_slot(&mut w,item)?;
+    for value in cursor {w.u8(value);}
+    Ok(w.data)
+}
+
 /// C08 in 1.8: right-click sword in air for blocking. This predates the
 /// dual-wield/hand enum; the sentinel position is (-1,-1,-1), face 255.
 /// The held item is a legacy NBT Slot, not a modern data-component item.
@@ -786,6 +805,20 @@ mod tests {
         assert!(decode_multi_block_change(&bulk.data[..bulk.data.len()-1]).is_err());
     }
 
+    #[test]
+    fn classic_right_click_block_has_position_face_item_and_fractional_cursor() {
+        let p=BlockPosition{x:8,y:64,z:-3};
+        let packet=place_block_body(p,1,None,[8,15,0]).unwrap();
+        assert_eq!(packet[0],0x08);
+        let mut read=Reader::new(&packet[1..]);
+        assert_eq!(BlockPosition::from_wire(read.i64().unwrap()),p);
+        assert_eq!(read.u8().unwrap(),1);
+        assert_eq!(read.i16().unwrap(),-1); // Empty 1.8 Slot
+        assert_eq!(read.bytes(3).unwrap(),&[8,15,0]);
+        assert_eq!(read.remaining(),0);
+        assert!(place_block_body(p,6,None,[0;3]).is_err());
+        assert!(place_block_body(p,3,None,[0,16,0]).is_err());
+    }
     #[test]
     fn respawn_health_and_server_selected_hotbar_reject_invalid_wire_data(){
         let mut d=Writer::new();
