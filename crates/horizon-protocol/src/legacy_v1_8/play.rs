@@ -463,6 +463,29 @@ pub fn digging_body(status: u8, position: BlockPosition, face: u8) -> Result<Vec
     Ok(w.data)
 }
 
+
+/// Serverbound 0x0b: 1.8 EntityAction. The local player entity ID comes
+/// from JoinGame (0x01), and action IDs match the pre-1.9 server protocol.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum PlayerAction {
+    StartSneaking=0,
+    StopSneaking=1,
+    LeaveBed=2,
+    StartSprinting=3,
+    StopSprinting=4,
+    StartHorseJump=5,
+    StopHorseJump=6,
+    OpenHorseInventory=7,
+}
+pub fn player_action_body(entity_id:i32,action:PlayerAction,jump_boost:i32)->Result<Vec<u8>> {
+    if entity_id<0 {return Err(Error::new("negative player entity ID"));}
+    if jump_boost<0 {return Err(Error::new("negative 1.8 horse jump boost"));}
+    let mut w=Writer::new();
+    w.varint(0x0b);w.varint(entity_id);w.varint(action as i32);w.varint(jump_boost);
+    Ok(w.data)
+}
+
 /// Serverbound 0x0a: swing arm (without a modern hand enum).
 pub fn swing_arm_body() -> Vec<u8> { vec![0x0a] }
 
@@ -666,6 +689,17 @@ mod tests {
         assert_eq!(changes[0].position, BlockPosition { x: -29, y: 64, z: 69 });
         assert_eq!(changes[1].position, BlockPosition { x: -32, y: 70, z: 79 });
         assert!(decode_multi_block_change(&bulk.data[..bulk.data.len()-1]).is_err());
+    }
+
+    #[test]
+    fn sprint_sneak_packets_use_legacy_entity_actions() {
+        assert_eq!(player_action_body(5,PlayerAction::StartSprinting,0).unwrap(),
+            [0x0b,5,3,0]);
+        assert_eq!(player_action_body(5,PlayerAction::StopSprinting,0).unwrap(),
+            [0x0b,5,4,0]);
+        assert_eq!(player_action_body(5,PlayerAction::StartSneaking,0).unwrap(),
+            [0x0b,5,0,0]);
+        assert!(player_action_body(-1,PlayerAction::StartSprinting,0).is_err());
     }
 
     #[test]
