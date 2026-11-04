@@ -4053,7 +4053,7 @@ impl Game<'_> {
             recipes: world_recipes!(self),
             // A client rolls no loot (LootTable.getRandomItems needs a
             // ServerLevel): it doesn't load the tables on its game thread.
-            loot: if self.remote.is_some() {
+            loot: if self.remote.is_some() || self.legacy_remote.is_some() {
                 None
             } else {
                 horizon_client::structure_blocks::loot_data(
@@ -4071,7 +4071,7 @@ impl Game<'_> {
             tickets: self.tickets.levels(),
             random_tick_sections: &mut self.random_tick_sections,
             lid_openers: &self.lid_openers,
-            client_side: self.remote.is_some(),
+            client_side: self.remote.is_some() || self.legacy_remote.is_some(),
             native_authoritative: self.serving.is_some() || self.options.dedicated.is_some(),
             debug: self.world_debug,
             native_sounds: &mut self.creatures.lan_sounds,
@@ -6669,7 +6669,7 @@ impl Game<'_> {
         None
     }
     fn spawn_player(&mut self) -> Result<()> {
-        if self.player.is_some() || self.remote.is_some() {
+        if self.player.is_some() || self.remote.is_some() || self.legacy_remote.is_some() {
             return Ok(());
         }
         if let Some((_, target)) = &self.travelling {
@@ -12034,7 +12034,7 @@ impl Game<'_> {
         self.clear_waypoints();
         self.post_effects.clear();
         self.spectated_post_effect = None;
-        if self.external_server() {
+        if self.external_server() || self.legacy_remote.is_some() {
             return self.leave_server(None);
         }
         self.begin_closing_save(false)
@@ -12045,7 +12045,7 @@ impl Game<'_> {
         // lets go of its track.
         self.music.stop_playing(None, &mut self.audio);
         self.audio.stop_all();
-        if self.remote.is_some() {
+        if self.remote.is_some() || self.legacy_remote.is_some() {
             self.world_icon = None;
             return self.leave_server(None);
         }
@@ -14466,7 +14466,7 @@ impl Game<'_> {
     /// generated chunk is saved, hundreds at a time, encoded and written on
     /// the region writer meanwhile.
     fn save_game_with(&mut self, wait: bool) -> Result<()> {
-        if self.remote.is_some() {
+        if self.remote.is_some() || self.legacy_remote.is_some() {
             return Ok(());
         }
         self.save_level(wait)?;
