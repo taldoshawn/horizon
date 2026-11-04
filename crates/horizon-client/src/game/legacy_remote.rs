@@ -160,6 +160,7 @@ pub(super) struct NativeLegacy {
     last_sneak:bool,
     last_selected:u8,
     mining:Option<LegacyMining>,
+    action_number:i16,
 }
 impl NativeLegacy {
     fn biome_map(biomes:&horizon_client::biome::Biomes)->[u16;256] {
@@ -214,6 +215,7 @@ impl NativeLegacy {
             last_sneak:false,
             last_selected:0,
             mining:None,
+            action_number:0,
         }
     }
 }
@@ -394,6 +396,56 @@ impl Game<'_> {
         }
         Ok(())
     }
+    /// Inventory screen's legacy C0E clicks. The server owns all slots:
+    /// only its SetSlot/WindowItems reply changes the visible inventory.
+    /// Unrecognized modes, Forge windows and creative item cloning are not
+    /// fabricated using the 26.3 menu simulator.
+    pub(super) fn native_189_menu_ops(
+        &mut self,ops:&[(Option<usize>,i32,horizon_client::menu::Input)]
+    )->bool {
+        use horizon_client::menu::Input;
+        if self.screen!=Screen::Inventory {return false;}
+        let Some(native)=self.legacy_remote.as_mut() else{return false};
+        let Some(worker)=native.worker.as_ref() else{return false};
+        let Some(window)=native.state.windows.get(&0) else{return false};
+        let mut sent=false;
+        for &(slot,button,input) in ops {
+            let id=match slot {
+                None=>-999i16,
+                Some(index)=>{
+                    let Some(old)=Self::menu_slot_index("inventory",index) else {
+                        return false;
+                    };
+                    if old>44 {return false;} // 1.8 has no offhand slot 45
+                    old as i16
+                }
+            };
+            let mode=match input {
+                Input::Pickup=>0,Input::QuickMove=>1,Input::Swap=>2,
+                Input::Clone=>3,Input::Throw=>4,Input::QuickCraft=>5,
+                Input::PickupAll=>6,
+            };
+            let Ok(button)=u8::try_from(button) else{return false};
+            if mode==3 && !self.creative {return false;}
+            native.action_number=native.action_number.wrapping_add(1);
+            let clicked=usize::try_from(id).ok()
+                .and_then(|i|window.slots.get(i))
+                .and_then(Option::as_ref);
+            let request=horizon_protocol::legacy_v1_8::inventory::Click {
+                window_id:0,slot:id,button,mode,
+                action_number:native.action_number,
+            };
+            if let Err(error)=worker.send_action(ClientAction::Click {
+                click:request,item:clicked
+            }) {
+                log::warn!("1.8 inventory click: {error}");
+                return false;
+            }
+            sent=true;
+        }
+        sent
+    }
+
     /// Server WindowItems (0x30) and SetSlot (0x2f): map 1.8 window 0
     /// 5..8 armour, 9..35 main slots, 36..44 hotbar. Server numeric item IDs
     /// are kept in LegacyGame for click/placement packets.
