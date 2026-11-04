@@ -1,0 +1,89 @@
+name: Importar Horizon Android e aplicar patch 1.8.9
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/bootstrap.yml'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: horizon-android-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  import-source:
+    if: github.repository == 'taldoshawn/horizon'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout do repositório
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          persist-credentials: true
+
+      - name: Importar código original e aplicar alterações
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -f Cargo.toml ]]; then
+            echo 'O código-fonte já foi importado. Nenhuma alteração feita.'
+            exit 0
+          fi
+
+          UPSTREAM_COMMIT='6eca278fd92e99ade83ae5823d090cb4bdc6d046'
+          git clone --quiet --depth 1 --branch android \
+            https://github.com/Vasysik/horizon-android.git "$RUNNER_TEMP/horizon-original"
+
+          CURRENT=$(git -C "$RUNNER_TEMP/horizon-original" rev-parse HEAD)
+          if [[ "$CURRENT" != "$UPSTREAM_COMMIT" ]]; then
+            echo "::error::A branch android mudou: esperado $UPSTREAM_COMMIT, recebido $CURRENT."
+            echo 'A importação foi interrompida para evitar conflito de patches.'
+            exit 1
+          fi
+
+          rsync -a \
+            --exclude='.git/' \
+            --exclude='README.md' \
+            --exclude='.github/workflows/bootstrap.yml' \
+            "$RUNNER_TEMP/horizon-original/" ./
+
+          git apply --check patches/horizon-android-189-pojav.patch
+          git apply patches/horizon-android-189-pojav.patch
+
+          test -f Cargo.toml
+          test -f crates/horizon-protocol/src/legacy_v1_8/play.rs
+          test -f crates/horizon-client/src/android/legacy_bridge.rs
+          test -f .github/workflows/android-dev.yml
+
+          python3 -m unittest discover -s tests -p 'test_android*.py'
+
+      - name: Commit e envio para main
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -f Cargo.toml ]]; then
+            echo 'O código-fonte não foi importado.'
+            exit 1
+          fi
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+
+          if git diff --cached --quiet; then
+            echo 'Sem alterações pendentes.'
+            exit 0
+          fi
+
+          git commit -m 'Import Horizon Android Rust source and experimental 1.8.9 changes'
+          git push origin HEAD:main
+
+          echo '### Código importado' >> "$GITHUB_STEP_SUMMARY"
+          echo 'O código Rust e os workflows Android foram enviados para main.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'A 1.8.9 nativa ainda NÃO está validada.' >> "$GITHUB_STEP_SUMMARY"
