@@ -21,6 +21,16 @@ use horizon_protocol::{
     },
 };
 
+/// Android launcher owns this setting; it is cleared when returning to the
+/// menu. Never enable the experimental game path through a public metadata tag.
+#[cfg(target_os="android")]
+static ANDROID_NATIVE_189:std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+#[cfg(target_os="android")]
+pub(super) fn set_android_native_189(value:bool) {
+    ANDROID_NATIVE_189.store(value,std::sync::atomic::Ordering::Release);
+}
+
 pub(super) struct NativeLegacy {
     connecting: Option<Receiver<std::result::Result<LegacyWireWorker, String>>>,
     worker: Option<LegacyWireWorker>,
@@ -164,7 +174,10 @@ impl Game<'_> {
     /// the existing public implementation until native 1.8.9 is actually
     /// playable and benchmarked.
     pub(super) fn native_189_requested()->bool {
-        std::env::var("HORIZON_NATIVE_189_DEV").ok().as_deref()==Some("1")
+        #[cfg(target_os="android")]
+        { return ANDROID_NATIVE_189.load(std::sync::atomic::Ordering::Acquire); }
+        #[cfg(not(target_os="android"))]
+        { std::env::var("HORIZON_NATIVE_189_DEV").ok().as_deref()==Some("1") }
     }
     pub(super) fn connect_native_189(&mut self,address:&str,name:&str)->Result<()> {
         if address.trim().is_empty() {
