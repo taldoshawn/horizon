@@ -7,7 +7,7 @@
 //! packets remain unimplemented; an active session is not a playable client.
 use std::time::Duration;
 
-use crate::{Error, Result, connection::Connection};
+use crate::{Error, Result, connection::Connection, buf::Reader};
 use super::{
     connect_login, inventory,
     physics::ClassicPlayer,
@@ -140,6 +140,10 @@ impl LegacySession {
     pub fn receive_one(&mut self)->Result<UpdateKind>{
         let (id,payload)=self.connection.recv()?;
         self.received_packets=self.received_packets.saturating_add(1);
+        if id==0x40 {
+            let reason=Reader::new(&payload).string(32767)?;
+            return Err(Error::new(format!("Minecraft 1.8 server disconnected: {reason}")));
+        }
         let update=self.game.apply(id,&payload)?;
         for response in update.replies {self.send_body(&response)?;}
         if update.kind==UpdateKind::PlayerCorrected {
@@ -148,13 +152,12 @@ impl LegacySession {
                 p.x,p.y,p.z,f64::from(p.yaw),f64::from(p.pitch)
             )?;
         }
-        if update.kind==UpdateKind::Entity {
-            if let Some(join)=&self.game.join {
-                if let Some(velocity)=self.game.entities.get(&join.entity_id) {
-                    self.local_player.apply_server_velocity(
-                        velocity.vx,velocity.vy,velocity.vz
-                    )?;
-                }
+        if id==0x12 {
+            let velocity=play::decode_entity_velocity(&payload)?;
+            if self.game.join.as_ref().is_some_and(|j|j.entity_id==velocity.entity_id) {
+                self.local_player.apply_server_velocity(
+                    velocity.x,velocity.y,velocity.z
+                )?;
             }
         }
         Ok(update.kind)
