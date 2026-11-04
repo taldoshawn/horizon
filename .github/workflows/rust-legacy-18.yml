@@ -31,7 +31,9 @@ jobs:
       - name: Check protocol 1.8.9 Rust tests
         run: cargo test -p horizon-protocol --lib legacy_v1_8 -- --nocapture
       - name: Check protocol probe build
-        run: cargo check -p horizon-protocol --example legacy18_probe
+        run: |
+          cargo check -p horizon-protocol --example legacy18_probe
+          cargo check -p horizon-protocol --example legacy18_live_worker
 
   renderer-tests:
     runs-on: ubuntu-24.04
@@ -130,6 +132,10 @@ jobs:
         run: |
           timeout 120s cargo run --locked -p horizon-protocol --example legacy18_probe -- \
             127.0.0.1:25565 HorizonCI189 --expect-world
+      - name: Verify Android-equivalent native TCP worker, world data, and movement
+        run: |
+          timeout 90s cargo run --locked -p horizon-protocol --example legacy18_live_worker -- \
+            127.0.0.1:25565 HorizonWorkerCI
       - name: Show vanilla server log on failure
         if: failure()
         run: tail -150 .local/vanilla189/vanilla.log || true
