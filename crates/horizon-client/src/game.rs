@@ -9065,6 +9065,9 @@ impl Game<'_> {
                 self.unselect_bundle(slot);
             }
         }
+        if self.legacy_remote.is_some() {
+            return self.native_189_menu_ops(ops);
+        }
         if self.remote.is_some() && self.screen == Screen::Inventory {
             // On a server the clicks are the server's: predicted and sent.
             return self.remote_menu_ops(ops);
