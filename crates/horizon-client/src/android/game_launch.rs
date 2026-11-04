@@ -12,6 +12,7 @@ pub(crate) struct LaunchRequest {
     pub extra_arguments: Vec<String>,
     pub open_gl: bool,
     pub gpu_batching: bool,
+    pub native_189_experimental: bool,
 }
 impl LaunchRequest {
     pub fn arguments(&self) -> Vec<String> {
@@ -54,9 +55,11 @@ pub(crate) fn start(
     std::env::set_current_dir(&request.game_home)?;
     horizon_client::android_runtime::configure_graphics(request.open_gl);
     horizon_client::android_runtime::configure_gpu(request.gpu_batching);
+    crate::game::android_native_189_mode(request.native_189_experimental);
     crate::game::android_reset_bundled_mods();
     let result = crate::game::android_game(request.arguments());
     if result.is_err() {
+        crate::game::android_native_189_mode(false);
         let _ = std::env::set_current_dir(previous);
     }
     result
@@ -75,6 +78,7 @@ mod tests {
             extra_arguments: vec![],
             open_gl: false,
             gpu_batching: false,
+            native_189_experimental: false,
         }
     }
     #[test]
