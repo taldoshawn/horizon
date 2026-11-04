@@ -31,6 +31,21 @@ pub(super) fn set_android_native_189(value:bool) {
     ANDROID_NATIVE_189.store(value,std::sync::atomic::Ordering::Release);
 }
 
+/// A block-breaking request already sent to the server. Progress is local
+/// feedback; the server alone decides whether a block is destroyed.
+#[derive(Clone,Copy,Debug)]
+struct LegacyMining { pos:play::BlockPosition,face:u8,progress:f32 }
+
+/// 1.8 face ordering for a raycast's outward face normal.
+fn old_face(face:[i32;3])->Option<u8> {
+    match face {
+        [0,-1,0]=>Some(0),[0,1,0]=>Some(1),
+        [0,0,-1]=>Some(2),[0,0,1]=>Some(3),
+        [-1,0,0]=>Some(4),[1,0,0]=>Some(5),
+        _=>None,
+    }
+}
+
 pub(super) struct NativeLegacy {
     connecting: Option<Receiver<std::result::Result<LegacyWireWorker, String>>>,
     worker: Option<LegacyWireWorker>,
@@ -40,6 +55,7 @@ pub(super) struct NativeLegacy {
     last_sprint:bool,
     last_sneak:bool,
     last_selected:u8,
+    mining:Option<LegacyMining>,
 }
 impl NativeLegacy {
     fn biome_map(biomes:&horizon_client::biome::Biomes)->[u16;256] {
@@ -93,6 +109,7 @@ impl NativeLegacy {
             last_sprint:false,
             last_sneak:false,
             last_selected:0,
+            mining:None,
         }
     }
 }
@@ -423,6 +440,7 @@ impl Game<'_> {
             }
             best.filter(|(_,distance)|self.before_block(*distance))
         }else{None};
+        let block_hit=if best.is_none(){self.pick()}else{None};
         let Some(legacy)=self.legacy_remote.as_mut() else{return false};
         let Some(worker)=legacy.worker.as_ref() else{return false};
         if let Err(error)=worker.send_action(ClientAction::SwingArm) {
@@ -434,6 +452,31 @@ impl Game<'_> {
                 log::warn!("1.8 attack: {error}");
             }
             legacy.motion.sprinting=false;
+        }else if let Some(hit)=block_hit
+            && let Some(face)=old_face(hit.face)
+        {
+            let position=play::BlockPosition{
+                x:hit.pos[0],y:hit.pos[1],z:hit.pos[2]
+            };
+            let next=LegacyMining{pos:position,face,progress:0.0};
+            if let Some(previous)=legacy.mining.take() {
+                if previous.pos!=position {
+                    let _=worker.send_action(ClientAction::Dig{
+                        status:1,position:previous.pos,face:previous.face
+                    });
+                }
+            }
+            if let Err(error)=worker.send_action(ClientAction::Dig{
+                status:0,position,face
+            }) {
+                log::warn!("1.8 start block digging: {error}");
+            }else if self.creative {
+                let _=worker.send_action(ClientAction::Dig{
+                    status:2,position,face
+                });
+            }else{
+                legacy.mining=Some(next);
+            }
         }
         true
     }
@@ -454,12 +497,7 @@ impl Game<'_> {
             return Ok(true);
         }
         if let Some(hit)=hit {
-            let face=match hit.face {
-                [0,-1,0]=>0,[0,1,0]=>1,
-                [0,0,-1]=>2,[0,0,1]=>3,
-                [-1,0,0]=>4,[1,0,0]=>5,
-                _=>return Ok(false),
-            };
+            let Some(face)=old_face(hit.face) else {return Ok(false)};
             let point=std::array::from_fn(|i|{
                 ((hit.point[i]-f64::from(hit.pos[i])).clamp(0.0,0.999)*16.0)
                     .floor() as u8
