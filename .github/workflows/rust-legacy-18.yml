@@ -5,6 +5,8 @@ on:
     branches: [main, 'feature/native-1_8_9-wire']
     paths:
       - 'crates/horizon-protocol/**'
+      - 'crates/horizon-client-render/**'
+      - 'crates/horizon-world/src/datafix/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
@@ -26,3 +28,16 @@ jobs:
         run: cargo test -p horizon-protocol --lib legacy_v1_8 -- --nocapture
       - name: Check protocol probe build
         run: cargo check -p horizon-protocol --example legacy18_probe
+
+  renderer-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up pinned Rust toolchain
+        run: rustup show
+      - name: Test legacy blocks and light in native renderer chunk storage
+        run: cargo test -p horizon-client-render --lib legacy_chunk -- --nocapture
