@@ -5739,7 +5739,7 @@ impl Game<'_> {
         // The 26.3 item/block interaction code is never authoritative on a
         // protocol-47 server. Its inventory IDs and block states are wrong.
         if self.legacy_remote.is_some() {
-            return Ok(false);
+            return self.native_189_use_hand(block_hit);
         }
         self.use_failed = false;
         // isSecondaryUseActive with something in either hand keeps blocks
