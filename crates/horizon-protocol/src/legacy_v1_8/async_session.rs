@@ -199,8 +199,8 @@ mod tests {
         let socket=std::net::TcpStream::connect(addr).unwrap();
         let connection=Connection::from_stream(socket).unwrap();
         let client=LegacyWireWorker::after_login(connection).unwrap();
-        // This is sent while the reader worker is polling the server.
-        client.send_action(ClientAction::Attack(10)).unwrap();
+        // Do not enqueue an attack before the server has received
+        // its keepalive reply: response ordering is intentional.
         let mut state=LegacyGame::default();
         let deadline=Instant::now()+Duration::from_secs(3);
         while Instant::now()<deadline&&state.join.is_none(){
@@ -212,6 +212,7 @@ mod tests {
             thread::sleep(Duration::from_millis(2));
         }
         assert_eq!(state.join.as_ref().unwrap().entity_id,5);
+        client.send_action(ClientAction::Attack(10)).unwrap();
         drop(client);
         server.join().unwrap();
     }
