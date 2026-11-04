@@ -18,6 +18,7 @@ pub mod physics;
 pub mod superflat;
 pub mod spawn;
 pub mod session;
+pub mod async_session;
 
 use std::time::Duration;
 
