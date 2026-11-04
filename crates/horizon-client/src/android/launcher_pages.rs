@@ -305,11 +305,14 @@ impl Launcher {
             let progress = *self.install.lock().unwrap();
             let legacy = self.catalog.config.runtime
                 == crate::catalog::RuntimeMode::Legacy1_8_9ViaProxy;
+            let native_legacy = self.catalog.config.runtime
+                == crate::catalog::RuntimeMode::Native1_8_9Experimental;
             ui.text(Face::Medium, if compact { 26.0 } else { 34.0 },
                 24.0, 124.0, color::TEXT, "Minecraft Java Edition");
             ui.text(Face::Regular, 15.0, 24.0, 164.0, color::MUTED,
-                if legacy { "Engine 26.3  /  Server 1.8.9 via ViaProxy" }
-                else { "26.3 native game engine  /  Rust" });
+                if legacy { "Engine 26.3 / Server 1.8.9 via ViaProxy" }
+                else if native_legacy { "1.8.9 native Rust / experimental, incomplete" }
+                else { "26.3 native game engine / Rust" });
             if h >= 470.0 && !installing {
                 let gaps = 9.0;
                 let block_width = (w - 48.0 - gaps * 3.0) / 4.0;
@@ -339,6 +342,9 @@ impl Launcher {
                 if legacy && h >= 425.0 {
                     ui.text(Face::Regular, 14.0, 24.0, h - 192.0, color::MUTED,
                         "Start ViaProxy in Termux before opening the game");
+                } else if native_legacy && h >= 425.0 {
+                    ui.text(Face::Regular, 14.0, 24.0, h - 192.0, color::MUTED,
+                        "WIP: multiplayer only, no guarantee of playable 1.8.9");
                 }
                 let version_width = (w - 48.0 - 92.0 - 9.0).max(110.0);
                 launcher_button(&mut ui, &mut self.targets,
@@ -351,6 +357,7 @@ impl Launcher {
                     [24.0, h - 96.0, w - 48.0, 58.0],
                     if !installed { "INSTALL MINECRAFT 26.3" }
                     else if legacy { "PLAY 1.8.9 SERVER (BRIDGE)" }
+                    else if native_legacy { "TRY NATIVE 1.8.9 (WIP)" }
                     else { "PLAY" },
                     Action::Play, true);
             }
@@ -1221,6 +1228,8 @@ impl Launcher {
                 self.error = None;
                 self.catalog.status = match self.catalog.config.runtime {
                     crate::catalog::RuntimeMode::Native26_3 => "Native 26.3 selected".into(),
+                    crate::catalog::RuntimeMode::Native1_8_9Experimental =>
+                        "Native 1.8.9 development engine selected (incomplete, multiplayer only)".into(),
                     crate::catalog::RuntimeMode::Legacy1_8_9ViaProxy =>
                         "1.8.9 bridge selected: start ViaProxy in Termux first".into(),
                 };
