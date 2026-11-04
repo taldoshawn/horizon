@@ -125,7 +125,14 @@ impl LegacySession {
     }
     pub fn send_action(&mut self,action:ClientAction<'_>)->Result<()> {
         let body=action.encode()?;
-        self.send_body(&body)
+        self.send_body(&body)?;
+        match action {
+            ClientAction::Attack(_) => self.local_player.sprinting=false,
+            ClientAction::BlockSword(_) => self.local_player.using_sword=true,
+            ClientAction::ReleaseSword => self.local_player.using_sword=false,
+            _ => {}
+        }
+        Ok(())
     }
     /// Returns one update *after* applying it to the authoritative world.
     /// Keep-alives and position confirmations go out immediately.
@@ -179,7 +186,7 @@ mod tests {
             x:1.0,y:64.0,z:-2.0,yaw:90.0,pitch:0.0,on_ground:true
         }.encode().unwrap();
         assert_eq!(bytes[0],6);
-        assert_eq!(bytes.len(),35);
+        assert_eq!(bytes.len(),34);
         let mut r=Reader::new(&bytes[1..]);
         assert_eq!(r.f64().unwrap(),1.0);
         assert_eq!(r.f64().unwrap(),64.0);
