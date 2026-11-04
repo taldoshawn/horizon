@@ -7,6 +7,7 @@ use std::io::Write;
 use flate2::{Compression, write::ZlibEncoder};
 use horizon_world::nbt::{self, NamedTag, JavaString, Tag};
 use crate::{Error, Result};
+#[cfg(test)]
 use super::world;
 
 const SECTOR:usize=4096;
