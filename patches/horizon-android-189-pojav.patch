@@ -1,0 +1,2271 @@
+diff --git a/.github/workflows/android-dev.yml b/.github/workflows/android-dev.yml
+--- a/.github/workflows/android-dev.yml
++++ b/.github/workflows/android-dev.yml
+@@ -3,7 +3,7 @@
+ 
+ on:
+   push:
+-    branches: [android]
++    branches: [main, android]
+     paths:
+       - 'crates/**'
+       - 'Cargo.toml'
+@@ -33,7 +33,7 @@
+ jobs:
+   build:
+     # Never expose a signing secret to pull requests or arbitrary dispatch refs.
+-    if: github.ref == 'refs/heads/android'
++    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/android'
+     runs-on: ubuntu-24.04
+     timeout-minutes: 150
+     strategy:
+@@ -58,7 +58,9 @@
+           from pathlib import Path
+           value = os.environ.get('DEV_KEYSTORE', '')
+           if not value:
+-              raise SystemExit('Set ANDROID_DEV_KEYSTORE_BASE64 first; see docs/android-dev-builds.md')
++              print('No signing secret configured: android_build.py will generate a local CI signing key.\n'
++                    'APK updates from different CI runs will require uninstall/reinstall.')
++              raise SystemExit(0)
+           path = Path('.local/android/debug.keystore')
+           path.parent.mkdir(parents=True, exist_ok=True)
+           path.write_bytes(base64.b64decode(value, validate=True))
+@@ -101,7 +103,7 @@
+       - name: Check public source and packaging boundaries
+         run: |
+           python3 tools/check_public_tree.py
+-          python3 -m unittest discover -s tests -p 'test_android_release_audit.py'
++          python3 -m unittest discover -s tests -p 'test_android*.py'
+       - name: Prepare private engine inputs from official downloads
+         run: python3 tools/android_prepare.py --java-home "$JAVA_HOME"
+       - name: Build optimized public dev APK
+@@ -130,12 +132,13 @@
+           for source, dest in [('LICENSE', 'LICENSE.txt'), ('THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_NOTICES.md')]:
+               shutil.copyfile(source, out / dest)
+           (out / 'BUILD.json').write_text(json.dumps({'commit': sha, 'abi': abi, 'profile': 'release',
+-              'package': 'dev.horizon.android.dev', 'experimental': True,
++              'package': 'dev.horizon.android.dev', 'experimental': True, 'protocol_47_login_foundation': True, 'protocol_47_play_supported': False, 'external_viaproxy_bridge': True, 'pojav_inspired_rust_launcher': True,
+               'run': f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'}, indent=2) + '\n')
+           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+               summary.write(f'### Dev APK: {abi}\n\nCommit: `{sha}`. Optimized release profile; experimental build.\n\n'
+                   'Download the APK artifact below. Installs separately from the stable app. '
+-                  'Existing worlds/accounts are not copied automatically.\n')
++                  'Existing worlds/accounts are not copied automatically.\n\n'
++                  '**Minecraft Java 1.8.9:** external ViaProxy mode in native Rust launcher; not a standalone native 1.8.9 engine. Start Termux bridge before Play.\n')
+           PY
+       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+         with:
+diff --git a/.github/workflows/android-source.yml b/.github/workflows/android-source.yml
+--- a/.github/workflows/android-source.yml
++++ b/.github/workflows/android-source.yml
+@@ -2,9 +2,9 @@
+ name: Android source checks
+ on:
+   push:
+-    branches: [android]
++    branches: [main, android]
+   pull_request:
+-    branches: [android]
++    branches: [main, android]
+   workflow_dispatch:
+     inputs:
+       native_checks:
+diff --git a/.github/workflows/legacy-18-tests.yml b/.github/workflows/legacy-18-tests.yml
+new file mode 100644
+--- /dev/null
++++ b/.github/workflows/legacy-18-tests.yml
+@@ -0,0 +1,46 @@
++name: Java 1.8 (protocol 47) codec tests
++on:
++  push:
++    branches: [main, android]
++    paths:
++      - 'crates/horizon-protocol/**'
++      - 'Cargo.toml'
++      - 'Cargo.lock'
++      - 'rust-toolchain.toml'
++      - '.github/workflows/legacy-18-tests.yml'
++      - 'packaging/android/legacy-proxy/**'
++      - 'tests/test_legacy_proxy_helper.py'
++      - 'tests/test_android_launcher_bridge.py'
++      - 'crates/horizon-client/src/android/**'
++  workflow_dispatch:
++permissions:
++  contents: read
++jobs:
++  protocol-47:
++    runs-on: ubuntu-24.04
++    timeout-minutes: 35
++    env:
++      CARGO_BUILD_JOBS: '2'
++      CARGO_PROFILE_DEV_DEBUG: '0'
++    steps:
++      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
++        with:
++          persist-credentials: false
++      - name: Install selected Rust version
++        run: rustup show
++      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
++        with:
++          path: |
++            ~/.cargo/registry
++            ~/.cargo/git
++            target
++          key: legacy18-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml') }}
++      - name: Termux proxy helper offline tests
++        run: |
++          bash -n packaging/android/legacy-proxy/start-termux.sh
++          python3 tests/test_legacy_proxy_helper.py
++          python3 tests/test_android_launcher_bridge.py
++      - name: Rust protocol 47 tests and mocked offline login
++        run: cargo test --locked -p horizon-protocol legacy_v1_8 --lib
++      - name: Rust 1.8 diagnostic probe type-check
++        run: cargo check --locked -p horizon-protocol --example legacy18_probe
+diff --git a/crates/horizon-client/src/android/catalog.rs b/crates/horizon-client/src/android/catalog.rs
+--- a/crates/horizon-client/src/android/catalog.rs
++++ b/crates/horizon-client/src/android/catalog.rs
+@@ -58,6 +58,8 @@
+     pub proxy: Option<String>,
+     pub name: String,
+     pub server: String,
++    /// Launch the native 26.3 game or join a 1.8.9 server through a local ViaProxy.
++    pub runtime: RuntimeMode,
+     #[serde(skip)]
+     pub microsoft_client_id: String,
+     pub renderer: RendererMode,
+@@ -74,6 +76,30 @@
+     pub device: crate::device_preferences::Settings,
+     pub shader_source: crate::shader_catalog::Origin,
+     pub mod_source: crate::shader_catalog::Origin,
++}
++
++/// Pojav-style version selector. Legacy currently uses an external protocol bridge,
++/// not an embedded Minecraft 1.8.9 engine or Java runtime.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
++#[serde(rename_all = "kebab-case")]
++pub enum RuntimeMode {
++    #[default]
++    Native26_3,
++    Legacy1_8_9ViaProxy,
++}
++impl RuntimeMode {
++    pub fn next(self) -> Self {
++        match self {
++            Self::Native26_3 => Self::Legacy1_8_9ViaProxy,
++            Self::Legacy1_8_9ViaProxy => Self::Native26_3,
++        }
++    }
++    pub fn label(self) -> &'static str {
++        match self {
++            Self::Native26_3 => "Minecraft 26.3 - native Rust",
++            Self::Legacy1_8_9ViaProxy => "Minecraft 1.8.9 server - ViaProxy",
++        }
++    }
+ }
+ 
+ pub use horizon_client::android_gamepad::InputMode as InputHost;
+diff --git a/crates/horizon-client/src/android/launcher.rs b/crates/horizon-client/src/android/launcher.rs
+--- a/crates/horizon-client/src/android/launcher.rs
++++ b/crates/horizon-client/src/android/launcher.rs
+@@ -57,6 +57,7 @@
+     drag: Option<gesture::Drag>,
+     chooser: Option<chooser::Chooser>,
+     exit_confirmation: bool,
++    drawer_open: bool,
+     login: login::Login,
+     wardrobe: wardrobe::Wardrobe,
+     session_worker: Option<mpsc::Receiver<std::result::Result<PreparedAccount, String>>>,
+@@ -138,6 +139,7 @@
+             drag: None,
+             chooser: None,
+             exit_confirmation: false,
++            drawer_open: false,
+             login: login::Login::new(),
+             session_worker: None,
+             session_ready: false,
+@@ -168,6 +170,7 @@
+         self.drag = None;
+         self.chooser = None;
+         self.exit_confirmation = false;
++        self.drawer_open = false;
+         self.focus = None;
+         self.pending_focus = None;
+         if let Err(error) = std::env::set_current_dir(&self.home) {
+@@ -250,7 +253,9 @@
+ 
+     fn request_back(&mut self) {
+         crate::platform::hide();
+-        if self.exit_confirmation {
++        if self.drawer_open {
++            self.drawer_open = false;
++        } else if self.exit_confirmation {
+             self.exit_confirmation = false;
+         } else if self.login.visible {
+             self.login.hide();
+@@ -291,6 +296,10 @@
+         crate::configure_input_mode(self.catalog.config.input_host);
+         crate::device_runtime::configure(self.catalog.config.device);
+         if horizon_client::official_install::ready(&self.home) {
++            if let Err(message) = crate::legacy_bridge::check(self.catalog.config.runtime) {
++                self.error = Some(message);
++                return Ok(());
++            }
+             horizon_client::android_resources::repair_structure_transforms(
+                 &self.home.join("engine-data.zip"),
+                 &self
+@@ -394,7 +403,10 @@
+                 game_home,
+                 session_file: self.prepared_session.take(),
+                 offline_name: crate::catalog::truncate_player_name(&self.catalog.config.name),
+-                server: self.catalog.config.server.clone(),
++                server: crate::legacy_bridge::server(
++                    self.catalog.config.runtime,
++                    &self.catalog.config.server,
++                ),
+                 control_socket: (!crate::PUBLIC_BUILD).then(|| self.home.join("control.json")),
+                 extra_arguments,
+                 open_gl: self.catalog.config.renderer == crate::catalog::RendererMode::OpenGl,
+diff --git a/crates/horizon-client/src/android/launcher_pages.rs b/crates/horizon-client/src/android/launcher_pages.rs
+--- a/crates/horizon-client/src/android/launcher_pages.rs
++++ b/crates/horizon-client/src/android/launcher_pages.rs
+@@ -9,6 +9,9 @@
+ pub(super) enum Action {
+     Page(Page),
+     Play,
++    ToggleDrawer,
++    CloseDrawer,
++    ToggleRuntime,
+     Search,
+     ShaderSource(crate::shader_catalog::Origin),
+     ModSource(crate::shader_catalog::Origin),
+@@ -125,6 +128,34 @@
+     );
+     targets.push((rect, action));
+ }
++/// Square-cornered Pojav-inspired native launcher button. Intentionally
++/// reimplemented in Rust; no PojavLauncher XML, Java code or assets are copied.
++fn launcher_button(
++    ui: &mut Ui,
++    targets: &mut Vec<([f32; 4], Action)>,
++    rect: [f32; 4],
++    text: &str,
++    action: Action,
++    primary: bool,
++) {
++    let [x, y, w, h] = rect;
++    let background = if primary { color::hex(0x3a8529, 255) } else { color::RAISED };
++    ui.rounded(x, y, w, h, 5.0, background);
++    ui.border(x, y, w, h, 1.0, if primary { color::hex(0x276019, 255) } else { color::BORDER });
++    let font = if primary { 22.0 } else { 15.0 };
++    let label = ui.fit_text(Face::Medium, font, text, (w - 24.0).max(10.0));
++    let label_width = ui.measure(Face::Medium, font, &label);
++    ui.text(
++        Face::Medium,
++        font,
++        x + (w - label_width).max(0.0) / 2.0,
++        y + (h - font) / 2.0 - 1.0,
++        if primary { color::hex(0xffffff, 255) } else { color::TEXT },
++        &label,
++    );
++    targets.push((rect, action));
++}
++
+ fn toggle(
+     ui: &mut Ui,
+     targets: &mut Vec<([f32; 4], Action)>,
+@@ -250,55 +281,21 @@
+         let scale = ui.density / ui.batch.scale;
+         ui.batch
+             .fill(&gui.atlas, 0.0, 0.0, w * scale, h * scale, color::BG);
+-        ui.text(
+-            Face::Medium,
+-            if w < 400.0 {
+-                20.0
+-            } else if w < 700.0 {
+-                24.0
+-            } else {
+-                32.0
+-            },
+-            32.0,
+-            if w < 700.0 { 12.0 } else { 28.0 },
+-            color::TEXT,
+-            &format!("Horizon Android {}", crate::backend::VERSION),
+-        );
+-        button(
+-            &mut ui,
+-            &mut self.targets,
+-            [
+-                if w < 700.0 { 32.0 } else { w - 320.0 },
+-                if w < 700.0 { 47.0 } else { 24.0 },
+-                if w < 700.0 { w - 64.0 } else { 288.0 },
+-                if w < 700.0 { 34.0 } else { 46.0 },
+-            ],
++        // Pojav-style top bar: drawer, selected account and settings.
++        launcher_button(&mut ui, &mut self.targets, [20.0, 20.0, 54.0, 46.0],
++            "MENU", Action::ToggleDrawer, false);
++        ui.text(Face::Medium, if w < 420.0 { 18.0 } else { 23.0 },
++            88.0, 20.0, color::TEXT, "HORIZON  /  RUST");
++        let account_width = (w * 0.35).clamp(120.0, 270.0);
++        button(&mut ui, &mut self.targets,
++            [w - account_width - 82.0, 20.0, account_width, 46.0],
+             &self.login.status(&self.catalog.config.name),
+-            Action::Account,
+-            self.login.signed_in,
+-        );
+-        let tabs = Page::ALL.len() as f32;
+-        let tab_margin = if w < 700.0 { 16.0 } else { 32.0 };
+-        let tab_width = (w - 2.0 * tab_margin) / tabs;
+-        for (i, page) in Page::ALL.iter().enumerate() {
+-            let x = tab_margin + i as f32 * tab_width;
+-            button(
+-                &mut ui,
+-                &mut self.targets,
+-                [x, 88.0, tab_width - 4.0, 42.0],
+-                if w < 700.0 {
+-                    match page {
+-                        Page::Installed => "Files",
+-                        Page::Settings => "Setup",
+-                        _ => page.name(),
+-                    }
+-                } else {
+-                    page.name()
+-                },
+-                Action::Page(*page),
+-                *page == self.catalog.page,
+-            );
+-        }
++            Action::Account, self.login.signed_in);
++        launcher_button(&mut ui, &mut self.targets,
++            [w - 72.0, 20.0, 52.0, 46.0], "SET", Action::Page(Page::Settings), false);
++        ui.rounded(20.0, 80.0, w - 40.0, 1.0, 0.0, color::BORDER);
++        ui.text(Face::Medium, 16.0, 24.0, 90.0, color::MUTED,
++            if self.catalog.page == Page::Play { "Launcher" } else { self.catalog.page.name() });
+         let compact = w < 700.0;
+         let page = self.catalog.page;
+         if page == Page::Play {
+@@ -306,158 +303,56 @@
+             let installed = horizon_client::official_install::ready(&self.home);
+             let installing = self.worker.is_some();
+             let progress = *self.install.lock().unwrap();
+-            let top = 160.0;
+-            ui.text(
+-                Face::Medium,
+-                32.0,
+-                32.0,
+-                top,
+-                color::TEXT,
+-                if installing {
+-                    "Getting your game ready"
+-                } else if installed {
+-                    "Ready to play"
+-                } else {
+-                    if compact {
+-                        "Your Java worlds"
+-                    } else {
+-                        "Your Java worlds, on Android"
+-                    }
+-                },
+-            );
+-            ui.text(
+-                Face::Regular,
+-                17.0,
+-                32.0,
+-                top + 47.0,
+-                color::MUTED,
+-                &format!("Minecraft 26.3  /  Profile {}", self.catalog.config.profile),
+-            );
++            let legacy = self.catalog.config.runtime
++                == crate::catalog::RuntimeMode::Legacy1_8_9ViaProxy;
++            ui.text(Face::Medium, if compact { 26.0 } else { 34.0 },
++                24.0, 124.0, color::TEXT, "Minecraft Java Edition");
++            ui.text(Face::Regular, 15.0, 24.0, 164.0, color::MUTED,
++                if legacy { "Engine 26.3  /  Server 1.8.9 via ViaProxy" }
++                else { "26.3 native game engine  /  Rust" });
++            if h >= 470.0 && !installing {
++                let gaps = 9.0;
++                let block_width = (w - 48.0 - gaps * 3.0) / 4.0;
++                for (i, (text, action)) in [
++                    ("Controls", Action::Page(Page::Settings)),
++                    ("Files", Action::GameFiles),
++                    ("Logs", Action::Logs),
++                    ("Mods", Action::Page(Page::Mods)),
++                ].into_iter().enumerate() {
++                    launcher_button(&mut ui, &mut self.targets,
++                        [24.0 + i as f32 * (block_width + gaps), 203.0, block_width, 43.0],
++                        text, action, false);
++                }
++            }
+             if installing {
+-                let current = InstallStage::ALL
+-                    .iter()
+-                    .position(|s| *s == progress.stage)
+-                    .unwrap_or(0);
+-                let row_height = ((h - 360.0) / 6.0).clamp(25.0, 40.0);
+-                if h >= 620.0 {
+-                    for (index, stage) in InstallStage::ALL.iter().enumerate() {
+-                        let y = top + 90.0 + index as f32 * row_height;
+-                        let label = if index < current {
+-                            format!("{:02}  {}  - done", index + 1, stage.label())
+-                        } else {
+-                            format!("{:02}  {}", index + 1, stage.label())
+-                        };
+-                        ui.text(
+-                            Face::Regular,
+-                            16.0,
+-                            32.0,
+-                            y,
+-                            if index == current {
+-                                color::TEXT
+-                            } else {
+-                                color::MUTED
+-                            },
+-                            &label,
+-                        );
+-                    }
+-                } else {
+-                    ui.text(
+-                        Face::Regular,
+-                        18.0,
+-                        32.0,
+-                        top + 100.0,
+-                        color::TEXT,
+-                        progress.stage.label(),
+-                    );
+-                    ui.text(
+-                        Face::Regular,
+-                        15.0,
+-                        32.0,
+-                        top + 138.0,
+-                        color::MUTED,
+-                        &format!("Step {} of 6", current + 1),
+-                    );
+-                }
+-                let fraction = if progress.total > 0 {
++                let stage = InstallStage::ALL.iter().position(|s| *s == progress.stage).unwrap_or(0);
++                let progress_fraction = if progress.total > 0 {
+                     progress.done as f32 / progress.total as f32
+-                } else {
+-                    0.0
+-                };
+-                let overall = (current as f32 + fraction.clamp(0.0, 1.0)) / 6.0;
+-                let bar_y = h - 152.0;
+-                ui.rounded(32.0, bar_y, w - 64.0, 4.0, 2.0, color::RAISED);
+-                if overall > 0.0 {
+-                    ui.rounded(32.0, bar_y, (w - 64.0) * overall, 4.0, 2.0, color::ACCENT);
+-                }
+-                let detail = match progress.stage {
+-                    InstallStage::Download => format!(
+-                        "{:.1} / {:.1} MiB  - verified downloads",
+-                        progress.done as f64 / 1048576.0,
+-                        progress.total as f64 / 1048576.0
+-                    ),
+-                    InstallStage::Controls => format!(
+-                        "{} / {} control files verified",
+-                        progress.done, progress.total
+-                    ),
+-                    _ => "Please keep Horizon open. Downloaded files are kept for retry.".into(),
+-                };
+-                ui.text(
+-                    Face::Regular,
+-                    14.0,
+-                    32.0,
+-                    bar_y + 12.0,
+-                    color::MUTED,
+-                    &detail,
+-                );
++                } else { 0.0 };
++                let overall = ((stage as f32 + progress_fraction.clamp(0.0, 1.0)) / 6.0).min(1.0);
++                ui.text(Face::Regular, 16.0, 24.0, h - 142.0,
++                    color::TEXT, progress.stage.label());
++                ui.rounded(24.0, h - 111.0, w - 48.0, 12.0, 4.0, color::RAISED);
++                ui.rounded(24.0, h - 111.0, (w - 48.0) * overall,
++                    12.0, 4.0, color::hex(0x3a8529, 255));
+             } else {
+-                let rows = if installed {
+-                    [
+-                        "01  Open a world or join a Java server",
+-                        "02  Touch setup: Options > Controls",
+-                        "03  Find packs and .hmod in the tabs",
+-                    ]
+-                } else {
+-                    [
+-                        "01  Download resources from Mojang",
+-                        "02  Install and verify on this phone",
+-                        "03  Play offline or sign in for servers",
+-                    ]
+-                };
+-                for (index, line) in rows.iter().enumerate() {
+-                    ui.text(
+-                        Face::Regular,
+-                        17.0,
+-                        32.0,
+-                        top + 100.0 + index as f32 * 42.0,
+-                        color::MUTED,
+-                        line,
+-                    );
+-                }
+-            }
+-            if installing {
+-                ui.text(
+-                    Face::Medium,
+-                    19.0,
+-                    32.0,
+-                    h - 90.0,
+-                    color::TEXT,
+-                    progress.stage.label(),
+-                );
+-            } else {
+-                button(
+-                    &mut ui,
+-                    &mut self.targets,
+-                    [32.0, h - 100.0, 320.0, 60.0],
+-                    if installed {
+-                        "Play"
+-                    } else if self.error.is_some() {
+-                        "Retry installation"
+-                    } else {
+-                        "Download Minecraft 26.3"
+-                    },
+-                    Action::Play,
+-                    true,
+-                );
++                if legacy && h >= 425.0 {
++                    ui.text(Face::Regular, 14.0, 24.0, h - 192.0, color::MUTED,
++                        "Start ViaProxy in Termux before opening the game");
++                }
++                let version_width = (w - 48.0 - 92.0 - 9.0).max(110.0);
++                launcher_button(&mut ui, &mut self.targets,
++                    [24.0, h - 158.0, version_width, 52.0],
++                    self.catalog.config.runtime.label(), Action::ToggleRuntime, false);
++                launcher_button(&mut ui, &mut self.targets,
++                    [24.0 + version_width + 9.0, h - 158.0, 92.0, 52.0],
++                    "EDIT", Action::Page(Page::Settings), false);
++                launcher_button(&mut ui, &mut self.targets,
++                    [24.0, h - 96.0, w - 48.0, 58.0],
++                    if !installed { "INSTALL MINECRAFT 26.3" }
++                    else if legacy { "PLAY 1.8.9 SERVER (BRIDGE)" }
++                    else { "PLAY" },
++                    Action::Play, true);
+             }
+         } else if page == Page::Skins {
+             self.wardrobe
+@@ -1084,35 +979,42 @@
+             );
+         }
+         let status = self.error.as_deref().unwrap_or(&self.catalog.status);
+-        for (i, line) in status
+-            .chars()
+-            .collect::<Vec<_>>()
+-            .chunks(110)
+-            .take(2)
+-            .enumerate()
+-        {
+-            ui.text(
+-                Face::Regular,
+-                14.0,
+-                32.0,
+-                h - 47.0 + i as f32 * 18.0,
+-                color::MUTED,
+-                &ui.fit_text(
+-                    Face::Regular,
+-                    14.0,
+-                    &line.iter().collect::<String>(),
+-                    (w - 210.0).max(40.0),
+-                ),
+-            );
+-        }
+-        button(
+-            &mut ui,
+-            &mut self.targets,
+-            [w - 142.0, h - 52.0, 110.0, 32.0],
+-            "GitHub",
+-            Action::Repository,
+-            false,
+-        );
++        if page == Page::Play {
++            if !status.is_empty() {
++                ui.text(Face::Regular, 12.0, 24.0, h - 25.0, color::MUTED,
++                    &ui.fit_text(Face::Regular, 12.0, status, w - 48.0));
++            }
++        } else {
++            for (i, line) in status.chars().collect::<Vec<_>>()
++                .chunks(110).take(2).enumerate() {
++                ui.text(Face::Regular, 14.0, 32.0,
++                    h - 47.0 + i as f32 * 18.0, color::MUTED,
++                    &ui.fit_text(Face::Regular, 14.0,
++                        &line.iter().collect::<String>(), (w - 210.0).max(40.0)));
++            }
++            button(&mut ui, &mut self.targets, [w - 142.0, h - 52.0, 110.0, 32.0],
++                "GitHub", Action::Repository, false);
++        }
++        // Native-Rust navigation drawer based on Pojav's information layout.
++        if self.drawer_open {
++            self.targets.clear();
++            self.list_targets.clear();
++            self.list_view = None;
++            ui.rounded(0.0, 0.0, w, h, 0.0,
++                horizon_client::hud::rgba(0, 0, 0, 166));
++            let dw = w.min(300.0).min(w * 0.8);
++            ui.rounded(0.0, 0.0, dw, h, 0.0, color::BG);
++            ui.text(Face::Medium, 22.0, 20.0, 22.0, color::TEXT, "Horizon Launcher");
++            let row_h = ((h - 95.0) / (Page::ALL.len() as f32)).min(49.0);
++            for (i, nav_page) in Page::ALL.iter().enumerate() {
++                let yy = 70.0 + i as f32 * row_h;
++                launcher_button(&mut ui, &mut self.targets,
++                    [14.0, yy, dw - 28.0, (row_h - 5.0).max(24.0)],
++                    nav_page.name(), Action::Page(*nav_page),
++                    *nav_page == self.catalog.page);
++            }
++            self.targets.push(([dw, 0.0, w - dw, h], Action::CloseDrawer));
++        }
+         if self.login.visible {
+             self.list_targets.clear();
+             self.list_view = None;
+@@ -1311,6 +1213,18 @@
+             audio.play_button_click();
+         }
+         match action {
++            Some(Action::ToggleDrawer) => { self.drawer_open = !self.drawer_open; }
++            Some(Action::CloseDrawer) => { self.drawer_open = false; }
++            Some(Action::ToggleRuntime) => {
++                self.catalog.config.runtime = self.catalog.config.runtime.next();
++                self.catalog.config.save(&self.home)?;
++                self.error = None;
++                self.catalog.status = match self.catalog.config.runtime {
++                    crate::catalog::RuntimeMode::Native26_3 => "Native 26.3 selected".into(),
++                    crate::catalog::RuntimeMode::Legacy1_8_9ViaProxy =>
++                        "1.8.9 bridge selected: start ViaProxy in Termux first".into(),
++                };
++            }
+             Some(Action::ConfirmExit) => {
+                 events.exit();
+             }
+@@ -1570,6 +1484,7 @@
+             }
+             Some(Action::LoginLink) => self.login.open_link(),
+             Some(Action::Page(page)) => {
++                self.drawer_open = false;
+                 if page == Page::Skins {
+                     self.wardrobe.open(
+                         &self.catalog.config.name,
+diff --git a/crates/horizon-client/src/android/legacy_bridge.rs b/crates/horizon-client/src/android/legacy_bridge.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/horizon-client/src/android/legacy_bridge.rs
+@@ -0,0 +1,42 @@
++//! Safe, explicit bridge selection. No protocol-47 play compatibility is claimed.
++//! The game still speaks 26.3; ViaProxy must translate it to the 1.8.9 server.
++use std::net::{SocketAddr, TcpStream};
++use std::time::Duration;
++
++use crate::catalog::RuntimeMode;
++
++pub const LOOPBACK: &str = "127.0.0.1:25568";
++const PROBE_TIMEOUT: Duration = Duration::from_millis(450);
++
++pub fn server(mode: RuntimeMode, configured: &str) -> String {
++    match mode {
++        RuntimeMode::Native26_3 => configured.to_string(),
++        RuntimeMode::Legacy1_8_9ViaProxy => LOOPBACK.to_string(),
++    }
++}
++
++/// Check whether a process actually accepts TCP connections on the loopback
++/// port. This DOES NOT prove it is ViaProxy or that 1.8.9 will play correctly.
++pub fn check(mode: RuntimeMode) -> Result<(), String> {
++    if mode == RuntimeMode::Native26_3 { return Ok(()); }
++    let addr: SocketAddr = LOOPBACK.parse().expect("constant valid socket address");
++    TcpStream::connect_timeout(&addr, PROBE_TIMEOUT)
++        .map(|stream| drop(stream))
++        .map_err(|_| format!(
++            "ViaProxy not detected at {LOOPBACK}. Start the Termux bridge first, then tap Play."
++        ))
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    #[test]
++    fn native_keeps_existing_server() {
++        assert_eq!(server(RuntimeMode::Native26_3, "example.org:25565"), "example.org:25565");
++    }
++    #[test]
++    fn bridge_only_uses_loopback() {
++        assert_eq!(server(RuntimeMode::Legacy1_8_9ViaProxy, "evil.example"), LOOPBACK);
++        assert_eq!(LOOPBACK.parse::<SocketAddr>().unwrap().ip().to_string(), "127.0.0.1");
++    }
++}
+diff --git a/crates/horizon-client/src/android_main.rs b/crates/horizon-client/src/android_main.rs
+--- a/crates/horizon-client/src/android_main.rs
++++ b/crates/horizon-client/src/android_main.rs
+@@ -8,6 +8,8 @@
+ mod game_launch;
+ #[path = "android/launcher.rs"]
+ mod launcher;
++#[path = "android/legacy_bridge.rs"]
++mod legacy_bridge;
+ // Share the desktop launcher's actual search, compatibility checks, downloads,
+ // dependency resolution and Java content porting; GPUI itself is desktop-only.
+ // These files are formatted in the launcher's separate Rust 2021 workspace.
+diff --git a/crates/horizon-client/src/touch_ui.rs b/crates/horizon-client/src/touch_ui.rs
+--- a/crates/horizon-client/src/touch_ui.rs
++++ b/crates/horizon-client/src/touch_ui.rs
+@@ -285,6 +285,15 @@
+         }
+     }
+     pub fn action(&self, w: f32, h: f32, p: [f32; 2], menu: bool) -> Option<Action> {
++        // Pojav-inspired centered tools handle. In-game controls remain Rust and
++        // do not depend on Android views or the PojavLauncher Java renderer.
++        // Hide on narrow viewports to avoid the F3/F5/Chat keys.
++        if w >= 500.0
++            && (3.0..23.0).contains(&p[1])
++            && (w * 0.5 - 35.0..w * 0.5 + 35.0).contains(&p[0])
++        {
++            return Some(Action::More);
++        }
+         if menu && self.virtual_mouse {
+             for ([x, y, width, height], right) in mouse_button_rects(w, h) {
+                 if (x..x + width).contains(&p[0]) && (y..y + height).contains(&p[1]) {
+@@ -329,6 +338,10 @@
+         None
+     }
+     pub fn draw(&self, b: &mut HudBatch, a: &HudAtlas, menu: bool) {
++        if b.width >= 500.0 {
++            button(b, a, if self.expanded { "CLOSE" } else { "TOOLS" },
++                b.width * 0.5 - 35.0, 3.0, 70.0);
++        }
+         for (label, x, width) in [
+             ("...", 3.0, 33.0),
+             ("F3", 39.0, 33.0),
+@@ -430,6 +443,13 @@
+ #[cfg(test)]
+ mod tests {
+     use super::*;
++    #[test]
++    fn center_tools_drawer_is_interactive_on_wide_screens() {
++        let ui = TouchUi::default();
++        assert!(matches!(ui.action(800.0, 400.0, [400.0, 11.0], false),
++            Some(Action::More)));
++        assert!(ui.action(320.0, 400.0, [160.0, 11.0], false).is_none());
++    }
+     #[test]
+     fn explicit_mouse_drag_does_not_generate_an_extra_tap_or_hold_click() {
+         let mut ui = TouchUi::default();
+diff --git a/crates/horizon-protocol/Cargo.toml b/crates/horizon-protocol/Cargo.toml
+--- a/crates/horizon-protocol/Cargo.toml
++++ b/crates/horizon-protocol/Cargo.toml
+@@ -32,3 +32,7 @@
+ 
+ [lints]
+ workspace = true
++
++[[example]]
++name = "legacy18_probe"
++path = "examples/legacy18_probe.rs"
+diff --git a/crates/horizon-protocol/examples/legacy18_probe.rs b/crates/horizon-protocol/examples/legacy18_probe.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/horizon-protocol/examples/legacy18_probe.rs
+@@ -0,0 +1,54 @@
++//! Protocol 47 diagnostic (not a gameplay client): joins a 1.8 offline-mode
++//! server, acknowledges 1.8 movement corrections and validates chunk framing.
++//! Does not render the world, load entities, or authenticate premium servers.
++use std::time::Duration;
++use horizon_protocol::legacy_v1_8::{
++    connect_login, keep_alive_id, keep_alive_response_body,
++    play::{self, PositionLook},
++};
++
++fn main() -> Result<(), Box<dyn std::error::Error>> {
++    let mut args = std::env::args().skip(1);
++    let address = args.next().ok_or("usage: cargo run -p horizon-protocol --example legacy18_probe -- <server:port> <username>")?;
++    let username = args.next().ok_or("missing username")?;
++    let (mut conn, uuid) = connect_login(&address, &username, Duration::from_secs(10), None)?;
++    println!("Connected via protocol 47: {username} UUID {uuid}");
++    println!("Diagnostic only: rendering and playable 1.8 translation are not implemented.");
++    conn.send(&play::client_settings_body("en_US", 8, 0x7f)?)?;
++    let mut has_sky_light = true;
++    let mut current_position = PositionLook { x: 0.0, y: 64.0, z: 0.0,
++        yaw: 0.0, pitch: 0.0, flags: 0 };
++    let mut received_chunks = 0;
++    for _ in 0..128 {
++        let (id, payload) = conn.recv()?;
++        if let Some(value) = keep_alive_id(id, &payload)? {
++            conn.send(&keep_alive_response_body(value))?;
++            continue;
++        }
++        match id {
++            0x01 => {
++                let join = play::decode_join_game(&payload)?;
++                has_sky_light = join.dimension == 0;
++                println!("Joined entity {} dimension {} gamemode {}", join.entity_id, join.dimension, join.game_mode);
++            }
++            0x08 => {
++                current_position = play::decode_position_look(&payload)?.absolute(current_position);
++                conn.send(&play::position_look_response_body(current_position, false))?;
++                println!("Initial position ({:.1}, {:.1}, {:.1})", current_position.x, current_position.y, current_position.z);
++            }
++            0x21 => {
++                let chunk = play::decode_chunk_data(&payload, has_sky_light)?;
++                received_chunks += 1;
++                println!("Chunk ({}, {}) sections {}", chunk.x, chunk.z, chunk.sections.len());
++            }
++            0x26 => {
++                let chunks = play::decode_chunk_bulk(&payload)?;
++                received_chunks += chunks.len();
++                println!("Chunk bulk: {} columns", chunks.len());
++            }
++            _ => println!("Untranslated PLAY ID {id:#04x} ({} bytes)", payload.len()),
++        }
++    }
++    println!("Finished diagnostic: parsed {received_chunks} chunk columns");
++    Ok(())
++}
+diff --git a/crates/horizon-protocol/src/legacy_v1_8.rs b/crates/horizon-protocol/src/legacy_v1_8.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/horizon-protocol/src/legacy_v1_8.rs
+@@ -0,0 +1,276 @@
++//! Minecraft Java 1.8.x (protocol 47) transport and login foundation.
++//!
++//! This module is deliberately separate from the 26.3 packet enums. The old
++//! wire format has no configuration phase, has a different login profile
++//! representation, and its play/chunk/entity formats cannot be made compatible
++//! by merely changing the handshake's protocol integer.
++//!
++//! The handshake, status, compression, offline and authenticated login are
++//! implemented here. A *play-state translator* and its integration into the
++//! renderer are NOT implemented. Do not advertise this module as a playable
++//! 1.8 client. See docs/legacy-1.8-port.md.
++pub mod play;
++
++use std::time::Duration;
++
++use crate::{
++    Error, Result,
++    buf::{Reader, Writer},
++    connection::Connection,
++    crypto::{generate_secret, server_hash},
++    packets::handshake,
++    rsa::RsaPublicKey,
++    servers::parse_address,
++};
++
++/// Minecraft Java 1.8.0 through 1.8.9 (the protocol shared by these releases).
++pub const PROTOCOL: i32 = 47;
++
++/// 1.8 clientbound login state (before play, no configuration state).
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub enum LoginPacket {
++    Disconnect(String),
++    EncryptionRequest {
++        server_id: String,
++        public_key: Vec<u8>,
++        verify_token: Vec<u8>,
++    },
++    Success { uuid: String, username: String },
++    SetCompression(i32),
++}
++
++fn no_trailing(r: &Reader<'_>) -> Result<()> {
++    if r.remaining() == 0 {
++        Ok(())
++    } else {
++        Err(Error::new(format!("extra {} bytes in 1.8 login packet", r.remaining())))
++    }
++}
++
++/// Decode exactly the 1.8 login packets; the 26.3 login codec is not wire compatible.
++/// The byte array fields in 1.8 are VarInt-length-prefixed, not u16.
++pub fn decode_login(id: i32, payload: &[u8]) -> Result<LoginPacket> {
++    let mut r = Reader::new(payload);
++    let packet = match id {
++        0x00 => LoginPacket::Disconnect(r.string(32767)?),
++        0x01 => LoginPacket::EncryptionRequest {
++            server_id: r.string(20)?,
++            public_key: r.byte_array(8192)?,
++            verify_token: r.byte_array(512)?,
++        },
++        0x02 => LoginPacket::Success {
++            // In protocol 47, UUID is transmitted as a string, not 16 raw bytes.
++            uuid: r.string(36)?,
++            username: r.string(16)?,
++        },
++        0x03 => LoginPacket::SetCompression(r.varint()?),
++        _ => return Err(Error::new(format!("unknown 1.8 login packet {id:#x}"))),
++    };
++    no_trailing(&r)?;
++    Ok(packet)
++}
++
++/// Handshake packet body (without TCP packet-length prefix); compatible with
++/// the old and new handshake framing, but with protocol 47 encoded as VarInt.
++pub fn handshake_body(host: &str, port: u16, intent: i32) -> Vec<u8> {
++    handshake::Serverbound::Intention(handshake::Intention {
++        protocol: PROTOCOL,
++        host: host.to_owned(),
++        port,
++        intent,
++    })
++    .encode()
++}
++
++/// 1.8 Login Start contains *only* the name, not a UUID.
++pub fn login_start_body(name: &str) -> Result<Vec<u8>> {
++    if name.is_empty() || name.encode_utf16().count() > 16 {
++        return Err(Error::new("Minecraft 1.8 username must have 1..16 UTF-16 units"));
++    }
++    let mut w = Writer::new();
++    w.varint(0x00);
++    w.string(name);
++    Ok(w.data)
++}
++
++/// 1.8 Encryption Response; the two encrypted byte arrays use VarInt lengths.
++pub fn encryption_response_body(secret: &[u8], verify_token: &[u8]) -> Vec<u8> {
++    let mut w = Writer::new();
++    w.varint(0x01);
++    w.byte_array(secret);
++    w.byte_array(verify_token);
++    w.data
++}
++
++/// Incoming play-state keep-alive (0x00) in 1.8 has a VarInt id.
++/// This is a wire-level primitive, not a functional play-state bridge.
++pub fn keep_alive_id(id: i32, payload: &[u8]) -> Result<Option<i32>> {
++    if id != 0x00 {
++        return Ok(None);
++    }
++    let mut r = Reader::new(payload);
++    let keep_alive = r.varint()?;
++    no_trailing(&r)?;
++    Ok(Some(keep_alive))
++}
++
++pub fn keep_alive_response_body(id: i32) -> Vec<u8> {
++    let mut w = Writer::new();
++    w.varint(0x00);
++    w.varint(id);
++    w.data
++}
++
++/// Completes a 1.8 login and returns the *untranslated* PLAY connection.
++/// The caller is responsible for a version-specific play implementation.
++///
++/// `authenticate` is the caller's session-service join function. It receives
++/// the standard signed Minecraft server hash and must reject missing/expired
++/// ownership credentials. Pass `None` only for a server in offline mode.
++/// No passwords or auth tokens are persisted by this API.
++pub fn connect_login(
++    address: &str,
++    username: &str,
++    timeout: Duration,
++    mut authenticate: Option<&mut dyn FnMut(&str) -> Result<()>>,
++) -> Result<(Connection, String)> {
++    let (host, port) = parse_address(address).ok_or_else(|| Error::new("Invalid server address"))?;
++    let (mut c, resolved_host, resolved_port) =
++        Connection::connect_server_with_address(&host, port, timeout)?;
++    c.reader.set_read_timeout(Some(timeout))?;
++    c.send(&handshake_body(&resolved_host, resolved_port, handshake::LOGIN))?;
++    c.send(&login_start_body(username)?)?;
++    loop {
++        let (id, payload) = c.recv()?;
++        match decode_login(id, &payload)? {
++            LoginPacket::Disconnect(reason) => {
++                return Err(Error::new(format!("1.8 server refused login: {reason}")));
++            }
++            LoginPacket::SetCompression(threshold) => {
++                if threshold < 0 {
++                    return Err(Error::new("negative 1.8 compression threshold"));
++                }
++                c.set_compression(threshold);
++            }
++            LoginPacket::EncryptionRequest { server_id, public_key, verify_token } => {
++                let Some(join) = authenticate.as_mut() else {
++                    return Err(Error::new(
++                        "1.8 server requires Microsoft/Mojang session authentication",
++                    ));
++                };
++                let public = RsaPublicKey::from_der(&public_key)?;
++                let secret = generate_secret()?;
++                let hash = server_hash(&server_id, &secret, &public_key);
++                join(&hash)?;
++                c.send(&encryption_response_body(
++                    &public.encrypt(&secret)?,
++                    &public.encrypt(&verify_token)?,
++                ))?;
++                c.enable_encryption(&secret);
++            }
++            LoginPacket::Success { uuid, username: name } => {
++                if name != username {
++                    return Err(Error::new("1.8 login username mismatch"));
++                }
++                // 1.8 enters PLAY immediately: no LoginAcknowledged packet.
++                return Ok((c, uuid));
++            }
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::frame;
++    use std::{net::TcpListener, thread};
++
++    #[test]
++    fn handshake_is_protocol_47_login() {
++        assert_eq!(
++            handshake_body("localhost", 25565, handshake::LOGIN),
++            [0, 47, 9, b'l', b'o', b'c', b'a', b'l', b'h', b'o', b's', b't', 99, 221, 2]
++        );
++    }
++
++    #[test]
++    fn login_start_has_no_uuid() {
++        assert_eq!(login_start_body("Steve").unwrap(), b"\x00\x05Steve");
++        assert!(login_start_body("").is_err());
++        assert!(login_start_body("abcdefghijklmnopq").is_err());
++    }
++
++    #[test]
++    fn login_wire_packets_and_compression() {
++        let mut success = Writer::new();
++        success.string("12345678-1234-1234-1234-123456789abc");
++        success.string("Steve");
++        assert_eq!(
++            decode_login(2, &success.data).unwrap(),
++            LoginPacket::Success {
++                uuid: "12345678-1234-1234-1234-123456789abc".into(),
++                username: "Steve".into()
++            }
++        );
++        assert_eq!(decode_login(3, &[0x80, 1]).unwrap(), LoginPacket::SetCompression(128));
++        assert!(decode_login(2, &[2, b'a']).is_err());
++        let mut encrypt = Writer::new();
++        encrypt.string("");
++        encrypt.byte_array(&[0xaa, 0xbb]);
++        encrypt.byte_array(&[0x33]);
++        assert_eq!(
++            decode_login(1, &encrypt.data).unwrap(),
++            LoginPacket::EncryptionRequest {
++                server_id: "".into(), public_key: vec![0xaa, 0xbb], verify_token: vec![0x33]
++            }
++        );
++        let body = encryption_response_body(&[1, 2], &[3]);
++        assert_eq!(body, [1, 2, 1, 2, 1, 3]);
++        let wire = frame::encode(&body, None).unwrap();
++        assert_eq!(wire, [6, 1, 2, 1, 2, 1, 3]);
++    }
++
++    #[test]
++    fn keep_alive_round_trip() {
++        assert_eq!(keep_alive_id(0, &[0xac, 0x02]).unwrap(), Some(300));
++        assert_eq!(keep_alive_response_body(300), [0x00, 0xac, 0x02]);
++        assert!(keep_alive_id(0, &[0x80]).is_err());
++        assert_eq!(keep_alive_id(1, &[0]).unwrap(), None);
++    }
++
++    #[test]
++    fn offline_login_against_mock_1_8_server() {
++        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
++        let address = listener.local_addr().unwrap();
++        let server = thread::spawn(move || {
++            let (stream, _) = listener.accept().unwrap();
++            let mut c = Connection::from_stream(stream).unwrap();
++            let (id, payload) = c.recv().unwrap();
++            assert_eq!(id, 0);
++            let mut r = Reader::new(&payload);
++            assert_eq!(r.varint().unwrap(), PROTOCOL);
++            assert_eq!(r.string(255).unwrap(), "127.0.0.1");
++            assert_eq!(r.u16().unwrap(), address.port());
++            assert_eq!(r.varint().unwrap(), handshake::LOGIN);
++            let (id, payload) = c.recv().unwrap();
++            assert_eq!(id, 0);
++            assert_eq!(Reader::new(&payload).string(16).unwrap(), "Steve");
++            let mut success = Writer::new();
++            success.varint(2);
++            success.string("12345678-1234-1234-1234-123456789abc");
++            success.string("Steve");
++            c.send(&success.data).unwrap();
++            c.send(&keep_alive_response_body(300)).unwrap();
++            let (id, payload) = c.recv().unwrap();
++            assert_eq!(keep_alive_id(id, &payload).unwrap(), Some(300));
++        });
++        let (mut c, uuid) = connect_login(
++            &address.to_string(), "Steve", Duration::from_secs(5), None,
++        ).unwrap();
++        assert_eq!(uuid, "12345678-1234-1234-1234-123456789abc");
++        let (id, payload) = c.recv().unwrap();
++        let keep_alive = keep_alive_id(id, &payload).unwrap().unwrap();
++        c.send(&keep_alive_response_body(keep_alive)).unwrap();
++        server.join().unwrap();
++    }
++}
+diff --git a/crates/horizon-protocol/src/legacy_v1_8/play.rs b/crates/horizon-protocol/src/legacy_v1_8/play.rs
+new file mode 100644
+--- /dev/null
++++ b/crates/horizon-protocol/src/legacy_v1_8/play.rs
+@@ -0,0 +1,477 @@
++//! Selected Minecraft Java 1.8.x (protocol 47) PLAY wire types.
++//!
++//! These are not the modern PLAY packets: callers MUST NOT pass them into
++//! Horizon's 26.3 packet decoder. In particular, a 1.8 chunk contains packed
++//! numeric block ID + metadata, not a modern paletted block state array.
++use crate::{Error, Result, buf::{Reader, Writer}};
++
++/// The 1.8 server's join-game packet (clientbound PLAY 0x01).
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct JoinGame {
++    pub entity_id: i32,
++    pub game_mode: u8,
++    pub hardcore: bool,
++    pub dimension: i8,
++    pub difficulty: u8,
++    pub max_players: u8,
++    pub world_type: String,
++    pub reduced_debug_info: bool,
++}
++
++/// The 1.8 server's position correction (clientbound PLAY 0x08).
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct PositionLook {
++    pub x: f64,
++    pub y: f64,
++    pub z: f64,
++    pub yaw: f32,
++    pub pitch: f32,
++    /// Relative coordinate flags (X Y Z yaw pitch), bits 0..4.
++    pub flags: u8,
++}
++
++impl PositionLook {
++    /// Apply the server's relative flags to the last client position and rotation.
++    /// The server requires the *absolute* result in a C06 confirmation packet.
++    pub fn absolute(self, previous: Self) -> Self {
++        Self {
++            x: if self.flags & 1 != 0 { previous.x + self.x } else { self.x },
++            y: if self.flags & 2 != 0 { previous.y + self.y } else { self.y },
++            z: if self.flags & 4 != 0 { previous.z + self.z } else { self.z },
++            yaw: if self.flags & 8 != 0 { previous.yaw + self.yaw } else { self.yaw },
++            pitch: if self.flags & 16 != 0 { previous.pitch + self.pitch } else { self.pitch },
++            flags: 0,
++        }
++    }
++}
++
++fn ensure_consumed(r: &Reader<'_>, what: &str) -> Result<()> {
++    if r.remaining() == 0 { Ok(()) } else {
++        Err(Error::new(format!("1.8 {what} has {} trailing bytes", r.remaining())))
++    }
++}
++
++/// Decode a 1.8 JoinGame payload (ID 0x01 already removed).
++pub fn decode_join_game(payload: &[u8]) -> Result<JoinGame> {
++    let mut r = Reader::new(payload);
++    let entity_id = r.i32()?;
++    let game_mode_and_hardcore = r.u8()?;
++    let game_mode = game_mode_and_hardcore & 7;
++    let hardcore = game_mode_and_hardcore & 8 != 0;
++    let dimension = r.i8()?;
++    let difficulty = r.u8()?;
++    let max_players = r.u8()?;
++    let world_type = r.string(16)?;
++    let reduced_debug_info = r.bool()?;
++    ensure_consumed(&r, "join game")?;
++    Ok(JoinGame { entity_id, game_mode, hardcore, dimension, difficulty,
++        max_players, world_type, reduced_debug_info })
++}
++
++/// Decode a 1.8 Player Position & Look payload (ID 0x08 already removed).
++pub fn decode_position_look(payload: &[u8]) -> Result<PositionLook> {
++    let mut r = Reader::new(payload);
++    let pos = PositionLook {
++        x: r.f64()?, y: r.f64()?, z: r.f64()?,
++        yaw: r.f32()?, pitch: r.f32()?, flags: r.u8()?,
++    };
++    if pos.flags & !31 != 0 {
++        return Err(Error::new("unknown 1.8 position flags"));
++    }
++    if !pos.x.is_finite() || !pos.y.is_finite() || !pos.z.is_finite()
++        || !pos.yaw.is_finite() || !pos.pitch.is_finite() {
++        return Err(Error::new("1.8 server position contains NaN or infinity"));
++    }
++    ensure_consumed(&r, "position look")?;
++    Ok(pos)
++}
++
++/// Movement packet 0x06: respond to the 1.8 position correction (there is NO teleport id).
++/// `position` must have flags already resolved to absolute coordinates.
++pub fn position_look_response_body(position: PositionLook, on_ground: bool) -> Vec<u8> {
++    let mut w = Writer::new();
++    w.varint(0x06);
++    w.f64(position.x); w.f64(position.y); w.f64(position.z);
++    w.f32(position.yaw); w.f32(position.pitch);
++    w.bool(on_ground);
++    w.data
++}
++
++/// 1.8 client settings (PLAY 0x15), including view distance and skin parts.
++pub fn client_settings_body(locale: &str, view_distance: u8, skin_parts: u8) -> Result<Vec<u8>> {
++    if locale.is_empty() || locale.encode_utf16().count() > 7 {
++        return Err(Error::new("1.8 locale must have 1..7 characters"));
++    }
++    let mut w = Writer::new();
++    w.varint(0x15);
++    w.string(locale);
++    w.u8(view_distance.min(32));
++    w.u8(0); // Chat mode: enabled
++    w.bool(true); // Chat colors
++    w.u8(skin_parts);
++    Ok(w.data)
++}
++
++/// One 16x16x16 section from the old on-wire block and lighting arrays.
++#[derive(Debug, Clone)]
++pub struct ChunkSection<'a> {
++    pub y: u8,
++    /// 4096 little-endian u16 entries. bits 4..15: numeric block ID; 0..3: metadata.
++    pub packed_blocks: &'a [u8],
++    pub block_light: &'a [u8],
++    pub sky_light: Option<&'a [u8]>,
++}
++impl ChunkSection<'_> {
++    /// Coordinates local to a 16x16x16 section; returns numeric ID and metadata.
++    pub fn block(&self, x: u8, y: u8, z: u8) -> Option<(u16, u8)> {
++        if x >= 16 || y >= 16 || z >= 16 { return None; }
++        let index = (usize::from(y) * 256 + usize::from(z) * 16 + usize::from(x)) * 2;
++        let packed = u16::from_le_bytes([self.packed_blocks[index], self.packed_blocks[index + 1]]);
++        Some((packed >> 4, (packed & 15) as u8))
++    }
++}
++
++/// Decoded payload of 0x21 ChunkData, with borrowed blocks and light arrays.
++/// The caller supplies `has_sky_light` based on JoinGame.dimension (Nether = no).
++#[derive(Debug, Clone)]
++pub struct ChunkData<'a> {
++    pub x: i32,
++    pub z: i32,
++    pub full: bool,
++    pub sections: Vec<ChunkSection<'a>>,
++    pub biomes: Option<&'a [u8]>,
++}
++
++/// The maximum raw size of a single Minecraft 1.8 chunk column.
++const MAX_CHUNK_BYTES: usize = 16 * (8192 + 2048 + 2048) + 256;
++
++/// Parse sections with the vanilla array order: all packed block arrays,
++/// then all block light arrays, then all skylight arrays, then the 256 biomes.
++fn chunk_sections<'a>(
++    x: i32, z: i32, full: bool, bitmask: u16, bytes: &'a [u8], has_sky_light: bool,
++) -> Result<ChunkData<'a>> {
++    let section_count = bitmask.count_ones() as usize;
++    let expected = section_count * (8192 + 2048 + if has_sky_light { 2048 } else { 0 })
++        + if full { 256 } else { 0 };
++    if bytes.len() != expected {
++        return Err(Error::new(format!("1.8 chunk has {} bytes, expected {expected}", bytes.len())));
++    }
++    let mut data = Reader::new(bytes);
++    let mut sections = Vec::with_capacity(section_count);
++    for y in 0..16 {
++        if bitmask & (1 << y) != 0 {
++            sections.push(ChunkSection { y: y as u8, packed_blocks: data.bytes(8192)?,
++                block_light: &[], sky_light: None });
++        }
++    }
++    for section in &mut sections { section.block_light = data.bytes(2048)?; }
++    if has_sky_light {
++        for section in &mut sections { section.sky_light = Some(data.bytes(2048)?); }
++    }
++    let biomes = if full { Some(data.bytes(256)?) } else { None };
++    ensure_consumed(&data, "chunk bytes")?;
++    Ok(ChunkData { x, z, full, sections, biomes })
++}
++
++/// Decode 0x21 ChunkData. The caller supplies `has_sky_light` based on
++/// JoinGame.dimension (Overworld only). There is no *nested* zlib stream
++/// inside the chunk: 1.8 packet-frame compression happens before this codec.
++pub fn decode_chunk_data(payload: &[u8], has_sky_light: bool) -> Result<ChunkData<'_>> {
++    let mut r = Reader::new(payload);
++    let x = r.i32()?;
++    let z = r.i32()?;
++    let full = r.bool()?;
++    let bitmask = r.u16()?;
++    let len = r.count(MAX_CHUNK_BYTES)?;
++    let bytes = r.bytes(len)?;
++    ensure_consumed(&r, "chunk data")?;
++    chunk_sections(x, z, full, bitmask, bytes, has_sky_light)
++}
++
++/// Decode the 1.8 MapChunkBulk packet 0x26. Its wire format differs from 0x21:
++/// a global sky-light flag, a list of x/z/bitmasks, followed by raw per-chunk
++/// arrays of *implicit* lengths (NO VarInt preceding each chunk's bytes).
++pub fn decode_chunk_bulk(payload: &[u8]) -> Result<Vec<ChunkData<'_>>> {
++    let mut r = Reader::new(payload);
++    let sky_light = r.bool()?;
++    let n = r.count(1024)?;
++    let mut metadata = Vec::with_capacity(n);
++    for _ in 0..n {
++        metadata.push((r.i32()?, r.i32()?, r.u16()?));
++    }
++    let mut chunks = Vec::with_capacity(n);
++    for (x, z, mask) in metadata {
++        let size = mask.count_ones() as usize * (8192 + 2048 + if sky_light { 2048 } else { 0 }) + 256;
++        chunks.push(chunk_sections(x, z, true, mask, r.bytes(size)?, sky_light)?);
++    }
++    ensure_consumed(&r, "bulk chunks")?;
++    Ok(chunks)
++}
++
++/// Serverbound UseEntity packet 0x02, with 1.8's VarInt action code.
++/// The native game must make its own attack decision; this function does not
++/// implement or emulate the 1.8 combat rules.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub enum UseEntityAction {
++    Interact,
++    Attack,
++    InteractAt { x: f32, y: f32, z: f32 },
++}
++pub fn use_entity_body(entity_id: i32, action: UseEntityAction) -> Result<Vec<u8>> {
++    if entity_id < 0 {
++        return Err(Error::new("negative 1.8 target entity ID"));
++    }
++    let mut w = Writer::new();
++    w.varint(0x02);
++    w.varint(entity_id);
++    match action {
++        UseEntityAction::Interact => w.varint(0),
++        UseEntityAction::Attack => w.varint(1),
++        UseEntityAction::InteractAt { x, y, z } => {
++            if ![x, y, z].into_iter().all(f32::is_finite) {
++                return Err(Error::new("1.8 interaction has non-finite coordinates"));
++            }
++            w.varint(2);
++            w.f32(x);
++            w.f32(y);
++            w.f32(z);
++        }
++    }
++    Ok(w.data)
++}
++
++/// Clientbound 0x02 chat, including chat/system/action-bar position.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct ChatMessage {
++    pub json: String,
++    pub position: u8,
++}
++pub fn decode_chat_message(payload: &[u8]) -> Result<ChatMessage> {
++    let mut r = Reader::new(payload);
++    let json = r.string(32767)?;
++    let position = r.u8()?;
++    if position > 2 {
++        return Err(Error::new("unknown 1.8 chat position"));
++    }
++    ensure_consumed(&r, "chat")?;
++    Ok(ChatMessage { json, position })
++}
++
++/// Serverbound 0x01 chat/command; 1.8's vanilla chat max is 100 UTF-16 units.
++pub fn chat_message_body(input: &str) -> Result<Vec<u8>> {
++    if input.is_empty() || input.encode_utf16().count() > 100 {
++        return Err(Error::new("1.8 chat must contain 1..100 UTF-16 units"));
++    }
++    let mut w = Writer::new();
++    w.varint(0x01);
++    w.string(input);
++    Ok(w.data)
++}
++
++/// Serverbound 0x04 Player Position, with absolute feet Y (no head-Y field).
++pub fn player_position_body(x: f64, y: f64, z: f64, on_ground: bool) -> Result<Vec<u8>> {
++    if ![x, y, z].into_iter().all(f64::is_finite) {
++        return Err(Error::new("1.8 player position must be finite"));
++    }
++    let mut w = Writer::new();
++    w.varint(0x04);
++    w.f64(x);
++    w.f64(y);
++    w.f64(z);
++    w.bool(on_ground);
++    Ok(w.data)
++}
++
++/// Clientbound 0x13 DestroyEntities, with a bounded VarInt list.
++pub fn decode_destroy_entities(payload: &[u8]) -> Result<Vec<i32>> {
++    let mut r = Reader::new(payload);
++    let count = r.count(65535)?;
++    // Reject absurd allocation requests with fewer wire bytes than entries.
++    if count > r.remaining() {
++        return Err(Error::new("1.8 entity count exceeds available bytes"));
++    }
++    let mut entities = Vec::with_capacity(count);
++    for _ in 0..count {
++        entities.push(r.varint()?);
++    }
++    ensure_consumed(&r, "destroy entities")?;
++    Ok(entities)
++}
++
++/// Clientbound 0x15 entity-relative move: 1.8's signed byte deltas divide by 32.
++#[derive(Debug, Clone, Copy, PartialEq)]
++pub struct EntityRelativeMove {
++    pub entity_id: i32,
++    pub dx: f64,
++    pub dy: f64,
++    pub dz: f64,
++    pub on_ground: bool,
++}
++pub fn decode_entity_relative_move(payload: &[u8]) -> Result<EntityRelativeMove> {
++    let mut r = Reader::new(payload);
++    let value = EntityRelativeMove {
++        entity_id: r.varint()?,
++        dx: f64::from(r.i8()?) / 32.0,
++        dy: f64::from(r.i8()?) / 32.0,
++        dz: f64::from(r.i8()?) / 32.0,
++        on_ground: r.bool()?,
++    };
++    ensure_consumed(&r, "entity relative move")?;
++    Ok(value)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn join_game_1_8_packet() {
++        let mut w = Writer::new();
++        w.i32(7); w.u8(8 | 1); w.i8(-1); w.u8(2); w.u8(20);
++        w.string("default"); w.bool(true);
++        assert_eq!(decode_join_game(&w.data).unwrap(), JoinGame {
++            entity_id: 7, game_mode: 1, hardcore: true, dimension: -1,
++            difficulty: 2, max_players: 20, world_type: "default".to_string(),
++            reduced_debug_info: true,
++        });
++        w.u8(0);
++        assert!(decode_join_game(&w.data).is_err());
++    }
++
++    #[test]
++    fn position_and_confirmation_have_no_teleport_id() {
++        let mut w = Writer::new();
++        w.f64(2.0); w.f64(-1.0); w.f64(3.0);
++        w.f32(10.0); w.f32(20.0); w.u8(1 | 2 | 16);
++        let relative = decode_position_look(&w.data).unwrap();
++        let previous = PositionLook { x: 100.0, y: 63.0, z: 0.0,
++            yaw: 90.0, pitch: 5.0, flags: 0 };
++        let absolute = relative.absolute(previous);
++        assert_eq!(absolute.x, 102.0);
++        assert_eq!(absolute.y, 62.0);
++        assert_eq!(absolute.pitch, 25.0);
++        let bytes = position_look_response_body(absolute, false);
++        let mut r = Reader::new(&bytes);
++        assert_eq!(r.varint().unwrap(), 6);
++        assert_eq!(r.f64().unwrap(), 102.0);
++        assert_eq!(r.f64().unwrap(), 62.0);
++        assert_eq!(r.f64().unwrap(), 3.0);
++        assert_eq!(r.f32().unwrap(), 10.0);
++        assert_eq!(r.f32().unwrap(), 25.0);
++        assert!(!r.bool().unwrap());
++        assert_eq!(r.remaining(), 0);
++    }
++
++    #[test]
++    fn a_section_contains_packed_numeric_blocks_and_light() {
++        let mut packet = Writer::new();
++        packet.i32(-2); packet.i32(9); packet.bool(true); packet.u16(0x0002);
++        let mut data = vec![0; 8192 + 2048 + 2048 + 256];
++        // Section y=1, local (2,3,4); ID=35 wool, metadata=14 red.
++        let byte_index = (3*256 + 4*16 + 2) * 2;
++        let packed: u16 = (35 << 4) | 14;
++        data[byte_index..byte_index+2].copy_from_slice(&packed.to_le_bytes());
++        packet.byte_array(&data);
++        let chunk = decode_chunk_data(&packet.data, true).unwrap();
++        assert_eq!((chunk.x, chunk.z), (-2, 9));
++        assert_eq!(chunk.sections.len(), 1);
++        assert_eq!(chunk.sections[0].y, 1);
++        assert_eq!(chunk.sections[0].block(2, 3, 4), Some((35, 14)));
++        assert_eq!(chunk.sections[0].block(16, 3, 4), None);
++        assert_eq!(chunk.sections[0].block_light.len(), 2048);
++        assert_eq!(chunk.sections[0].sky_light.unwrap().len(), 2048);
++        assert_eq!(chunk.biomes.unwrap().len(), 256);
++        let mut corrupted = packet.data.clone();
++        corrupted.pop();
++        assert!(decode_chunk_data(&corrupted, true).is_err());
++        assert!(decode_chunk_data(&packet.data, false).is_err());
++    }
++
++    #[test]
++    fn no_skylight_and_chunk_unload() {
++        let mut packet = Writer::new();
++        packet.i32(0); packet.i32(0); packet.bool(true); packet.u16(0);
++        packet.byte_array(&[0u8; 256]);
++        let empty = decode_chunk_data(&packet.data, false).unwrap();
++        assert!(empty.sections.is_empty());
++        assert_eq!(empty.biomes.unwrap().len(), 256);
++    }
++
++    #[test]
++    fn client_settings_uses_1_8_layout() {
++        let settings = client_settings_body("en_US", 12, 0x7f).unwrap();
++        assert_eq!(settings, [0x15, 5, b'e', b'n', b'_', b'U', b'S', 12, 0, 1, 127]);
++    }
++
++    #[test]
++    fn bulk_chunks_follow_metadata_then_implicit_payload_lengths() {
++        let mut w = Writer::new();
++        w.bool(false); w.varint(2);
++        w.i32(1); w.i32(2); w.u16(0);
++        w.i32(3); w.i32(4); w.u16(1);
++        w.bytes(&[42u8; 256]);
++        w.bytes(&vec![0u8; 8192 + 2048 + 256]);
++        let chunks = decode_chunk_bulk(&w.data).unwrap();
++        assert_eq!(chunks.len(), 2);
++        assert_eq!((chunks[0].x, chunks[0].z), (1, 2));
++        assert_eq!(chunks[0].biomes.unwrap()[0], 42);
++        assert_eq!((chunks[1].x, chunks[1].z), (3, 4));
++        assert_eq!(chunks[1].sections.len(), 1);
++        assert!(chunks[1].sections[0].sky_light.is_none());
++        w.u8(0);
++        assert!(decode_chunk_bulk(&w.data).is_err());
++    }
++
++    #[test]
++    fn pvp_attack_and_interaction_wire_47() {
++        assert_eq!(use_entity_body(300, UseEntityAction::Attack).unwrap(),
++            [0x02, 0xac, 0x02, 0x01]);
++        assert_eq!(use_entity_body(1, UseEntityAction::Interact).unwrap(),
++            [0x02, 0x01, 0x00]);
++        assert!(use_entity_body(-1, UseEntityAction::Attack).is_err());
++        assert!(use_entity_body(1, UseEntityAction::InteractAt {
++            x: f32::NAN, y: 1.0, z: 1.0,
++        }).is_err());
++        let body = use_entity_body(2, UseEntityAction::InteractAt {
++            x: 0.5, y: 1.0, z: 0.25,
++        }).unwrap();
++        let mut r = Reader::new(&body);
++        assert_eq!((r.varint().unwrap(), r.varint().unwrap(), r.varint().unwrap()), (2, 2, 2));
++        assert_eq!([r.f32().unwrap(), r.f32().unwrap(), r.f32().unwrap()], [0.5, 1.0, 0.25]);
++        assert_eq!(r.remaining(), 0);
++    }
++
++    #[test]
++    fn chat_and_movement_wire_47() {
++        assert_eq!(chat_message_body("gg").unwrap(), [0x01, 2, b'g', b'g']);
++        assert!(chat_message_body("").is_err());
++        assert!(chat_message_body(&"a".repeat(101)).is_err());
++        let mut w = Writer::new();
++        w.string(r#"{"text":"hello"}"#);
++        w.u8(2);
++        assert_eq!(decode_chat_message(&w.data).unwrap().position, 2);
++        w.u8(0);
++        assert!(decode_chat_message(&w.data).is_err());
++        let bytes = player_position_body(1.0, 64.0, -3.0, true).unwrap();
++        let mut r = Reader::new(&bytes);
++        assert_eq!(r.varint().unwrap(), 4);
++        assert_eq!([r.f64().unwrap(), r.f64().unwrap(), r.f64().unwrap()], [1.0,64.0,-3.0]);
++        assert!(r.bool().unwrap());
++        assert!(player_position_body(f64::INFINITY, 1.0, 2.0, false).is_err());
++    }
++
++    #[test]
++    fn destroy_entities_and_relative_movement() {
++        let mut w = Writer::new();
++        w.varint(2); w.varint(4); w.varint(300);
++        assert_eq!(decode_destroy_entities(&w.data).unwrap(), vec![4, 300]);
++        w.varint(7);
++        assert!(decode_destroy_entities(&w.data).is_err());
++        let mut m = Writer::new();
++        m.varint(5); m.i8(-32); m.i8(16); m.i8(8); m.bool(true);
++        assert_eq!(decode_entity_relative_move(&m.data).unwrap(), EntityRelativeMove {
++            entity_id:5, dx:-1.0, dy:0.5, dz:0.25, on_ground:true,
++        });
++    }
++
++}
+diff --git a/crates/horizon-protocol/src/lib.rs b/crates/horizon-protocol/src/lib.rs
+--- a/crates/horizon-protocol/src/lib.rs
++++ b/crates/horizon-protocol/src/lib.rs
+@@ -11,6 +11,7 @@
+ pub mod hash_ops;
+ pub mod ids;
+ pub mod item;
++pub mod legacy_v1_8;
+ pub mod mod_net;
+ pub mod packets;
+ pub mod quiet;
+diff --git a/docs/android-dev-builds.md b/docs/android-dev-builds.md
+--- a/docs/android-dev-builds.md
++++ b/docs/android-dev-builds.md
+@@ -1,6 +1,6 @@
+ # Development APKs
+ 
+-The **Android dev APKs** Actions workflow builds ARM64 on code pushes to `android`.
++The **Android dev APKs** Actions workflow builds ARM64 on code pushes to `main` or `android`.
+ Documentation-only pushes are skipped. Older in-progress builds are cancelled
+ when a newer commit arrives. **Run workflow → all_abis** builds all four ABIs.
+ Pull requests never receive the signing key or trigger this workflow.
+@@ -27,7 +27,7 @@
+ build configuration. Clear the clipboard afterwards. Never attach the key to an
+ issue, artifact, release or message.
+ 
+-The workflow fails early if the secret is absent. Keeping the same key permits
++If the secret is absent, the build uses a new, temporary signing key for each run. Those APKs cannot upgrade an earlier installation in-place; to keep updates and existing app data, configure a stable private dev key. Keeping that key permits
+ in-place updates between CI dev builds; replacing it requires reinstalling the
+ dev app. Existing locally signed debug APKs may use a different key as well.
+ Back up their test data before uninstalling. Normal release installations are
+@@ -48,3 +48,7 @@
+ Only Cargo/Gradle build caches are retained separately for subsequent CI builds.
+ Cold builds also prepare the generated engine tables, so they may take
+ substantially longer than an incremental local build.
++
++## Java 1.8 work-in-progress
++
++See [legacy 1.8 protocol port status](legacy-1.8-port.md). Dev APK builds are still **26.3-only for gameplay**; packet-47 login work is not yet a playable 1.8 implementation.
+diff --git a/docs/legacy-1.8-play-now.md b/docs/legacy-1.8-play-now.md
+new file mode 100644
+--- /dev/null
++++ b/docs/legacy-1.8-play-now.md
+@@ -0,0 +1,27 @@
++# Play on 1.8.9 servers with Horizon Android via a local translation proxy
++
++The native gameplay translation for protocol 47 is **not complete**. The
++`horizon_protocol::legacy_v1_8` and `legacy_v1_8::play` modules decode selected
++1.8 login and PLAY wire data but are not integrated into the Android renderer.
++
++To actually try connecting the existing 26.3 Horizon Android client to a 1.8.9
++server now, use the optional standalone ViaProxy helper at
++`packaging/android/legacy-proxy/start-termux.sh`, documented in the adjacent
++README. It runs in Termux; it is not bundled into the APK, which remains a
++native Rust Android app. No unsupported Java JAR is embedded in Horizon.
++
++Official ViaProxy compatibility: https://github.com/ViaVersion/ViaProxy
++Termux OpenJDK 25 recipe: https://github.com/termux/termux-packages/tree/master/packages/openjdk-25
++
++This path still needs real-phone server testing, especially for authenticated
++servers and older anti-cheat. A standalone APK that plays 1.8.9 without a
++proxy is **not yet built**.
++
++## New Rust launcher integration (Pojav-inspired build)
++
++The native Android launcher now has a version selector with an explicit
++`Minecraft 1.8.9 server - ViaProxy` option. In this mode Play routes the
++existing 26.3 game through `127.0.0.1:25568` and refuses to launch when a
++local TCP listener is unavailable. This does NOT replace the engine with 1.8.9
++or eliminate the need for the external proxy. See
++`docs/pojav-inspired-rust-189.md` for exact steps.
+diff --git a/docs/legacy-1.8-port.md b/docs/legacy-1.8-port.md
+new file mode 100644
+--- /dev/null
++++ b/docs/legacy-1.8-port.md
+@@ -0,0 +1,112 @@
++# Minecraft Java 1.8.x (protocol 47) on Horizon Android — development status
++
++**The app in this source tree does not yet play on Minecraft 1.8 servers.**
++It still runs the Minecraft 26.3 game engine. Nothing in the GitHub Actions
++workflow or in this document should be presented as a completed 1.8 APK.
++
++The original Android source package had no upstream server-version adapter.
++A simple protocol version edit is **not** a port: 1.8 uses a different login
++profile shape and has no configuration state, and PLAY packet IDs, registries,
++blocks, entities, player movement, chunks, inventories and combat have changed
++substantially since 1.8. The old combat rules require additional gameplay work.
++
++## Implemented in this patch
++
++- A separate, memory-safe `horizon_protocol::legacy_v1_8` module.
++- Protocol 47 handshake (Status and Login), login start with the historical
++  name-only layout, clientbound login decoder, compression, RSA/AES encrypted
++  login using a caller's authentication callback, and success/disconnect.
++- 1.8 keep-alive encode/decode primitives.
++- Additional 1.8.9 PLAY codecs for JoinGame, player position/teleport confirmation, client settings, 0x21 chunk columns and 0x26 bulk chunks. Block ID/metadata arrays and lighting data are decoded and bounds-checked but **not rendered or translated**.
++- A Termux/ViaProxy helper at `packaging/android/legacy-proxy/` that can translate 26.3 client traffic to a 1.8.9 server without changing the Horizon APK. This requires Termux and a separate Java process; it has not yet been tested on the phone.
++- Unit tests of protocol 47 wire examples and a locally mocked 1.8 offline
++  login, including a keep-alive round trip (no public server accessed).
++- `legacy18_probe` diagnostic executable for an offline-mode **test server**:
++  it signs in, reports and decodes selected PLAY packets, and replies to keep-alives and position corrections. It is
++  **not** a game client and it does **not** render a 1.8 world.
++- GitHub Actions configured for the `main` or `android` branch, an APK build
++  and separate protocol tests. Signing keys are never committed or uploaded.
++
++## Remaining before a real playable Android 1.8 client
++
++1. Integrate protocol 47 login and session management into Android's game
++   state without ever feeding version-47 packets to the version-777 decoder.
++2. Add a packet translation layer for 1.8 PLAY clientbound **and** serverbound.
++3. Translate pre-flattening numeric block IDs and metadata, chunk sections,
++   biomes and lighting to Horizon's modern representations.
++4. Translate legacy entity metadata, equipment, inventories, windows,
++   movement, teleport confirmations, digging and placing packets.
++5. Handle 1.8 PvP mechanics (attack cooldown, reach and hit registration)
++   and account for server-specific anticheat expectations.
++6. Test offline servers first, then authenticated 1.8 servers using a licensed
++   Microsoft Minecraft account, then actual Android phone gameplay.
++
++## How to run the already implemented tests
++
++```
++cargo test --locked -p horizon-protocol legacy_v1_8 --lib
++cargo check --locked -p horizon-protocol --example legacy18_probe
++```
++
++To use the optional diagnostic tool with **your own offline-mode test server**:
++
++```
++cargo run --locked -p horizon-protocol --example legacy18_probe -- 127.0.0.1:25565 Steve
++```
++
++Do not use a real account's access token with this probe. It has no UI and no
++account storage; it intentionally rejects server encryption challenges when
++no session-auth callback is supplied.
++
++## Building the Android APK with GitHub Actions
++
++This build produces an **experimental Android 26.3 APK containing the new 1.8
++protocol foundation, not a working 1.8 gameplay client**.
++
++1. Fork `Vasysik/horizon-android` with branch `android` (or import the entire
++   patched source tree into a repository with default branch `main`).
++2. Apply this patch and push the changes to `main` or `android`.
++3. Open **Actions → Java 1.8 (protocol 47) codec tests** and check the tests.
++4. Open **Actions → Android dev APKs → Run workflow**. Select the branch.
++5. Download the ARM64 APK from the successful run's **Artifacts** section.
++
++The APK downloads resources from Mojang on first launch. GitHub runners must
++have Android NDK 28.2.13676358, SDK 35, JDK 25, Rust 1.95 and Gradle 8.14;
++the workflow installs/configures them. It uses only official resources and
++still builds the existing Horizon 26.3 Android client.
++
++### APK signing: important
++
++Without `ANDROID_DEV_KEYSTORE_BASE64`, the build generates an ephemeral signing
++key, so subsequent runs cannot update an earlier APK in place. To keep the
++same Android app's installed data across CI builds, use a private dedicated
++keystore as documented in `docs/android-dev-builds.md`. Never commit a key, a
++Microsoft token, raw game JARs or generated Mojang assets to GitHub.
++
++## Code locations
++
++- `crates/horizon-protocol/src/legacy_v1_8.rs` — new wire protocol and tests
++- `crates/horizon-protocol/examples/legacy18_probe.rs` — isolated login probe
++- `crates/horizon-client/src/net.rs` — existing 26.3-only game session; requires
++  future integration (no changes yet to prevent accidental decoding as 26.3)
++- `.github/workflows/legacy-18-tests.yml` — new codec test workflow
++- `.github/workflows/android-dev.yml` — modified APK build workflow
++
++## Alternative path to play now: local ViaProxy
++
++See `docs/legacy-1.8-play-now.md` and `packaging/android/legacy-proxy/README.md`.
++This keeps Horizon 26.3 but routes a 1.8.9 server through an official third-party
++protocol translator. **Not** a native 1.8.9 APK; requires a separate Termux
++process, additional RAM and licensed account auth for premium servers.
++
++## Incremental Rust work after the initial codec patch
++
++This fork adds packet 47 chat send/receive, UseEntity/attack encoding, player
++position encoding, entity removal decoding and relative-entity movement
++decoding, with local round-trip test vectors. These functions are intentionally
++not connected to the 26.3 game session yet. A 26.3 packet cannot be sent to
++a 1.8 server just by changing its packet ID.
++
++The Android Rust launcher now exposes an **external ViaProxy mode** via its
++version selector; that is an optional interoperability bridge, not a replacement
++for the incomplete native protocol implementation.
+diff --git a/docs/pojav-inspired-rust-189.md b/docs/pojav-inspired-rust-189.md
+new file mode 100644
+--- /dev/null
++++ b/docs/pojav-inspired-rust-189.md
+@@ -0,0 +1,78 @@
++# Pojav-inspired Horizon Android launcher, written in Rust
++
++## What this change ACTUALLY does
++
++- The **existing native Horizon 26.3 Rust game** is retained. No Java game engine,
++  PojavLauncher Java classes, layout XML or Pojav resource files are shipped.
++- The Rust launcher has a Pojav-like layout: account/profile row, settings,
++  navigation drawer, prominent version selector, a broad green Play button,
++  and shortcuts to files, controls, logs and mods where there is room.
++- The in-game touch overlay adds a centered Tools drawer handle on wide
++  screens, using the existing Rust `TouchUi::Action::More` control; the
++  original side handle remains available for accessibility.
++- Choosing `Minecraft 1.8.9 server - ViaProxy` saves an explicit launch mode in
++  `android-launcher.json`. **The label deliberately says server and ViaProxy**:
++  this is NOT the Minecraft 1.8.9 executable.
++- When you press Play in that mode, the app checks `127.0.0.1:25568` locally.
++  If it is unavailable, it displays an error instead of launching a broken
++  connection. When available, the native 26.3 client starts with
++  `--server 127.0.0.1:25568`. The local proxy must be configured to connect
++  to the intended Minecraft 1.8.9 server.
++- `Native26_3` keeps the server address specified in Settings unchanged.
++  Both modes are persisted with a backward-compatible serde default.
++
++## What this change does NOT do
++
++This is **not a complete native 1.8.9 game port**. The 1.8 protocol 47 codec
++has additional Rust wire packets for chat, player position, entity movement,
++entity removal and attack packets, but **it is not connected to Horizon's
++renderer/simulation/inventory or native network play session**. The external
++ViaProxy translator is required to connect to 1.8 servers. Old 1.8 PvP
++mechanics and mods are NOT guaranteed.
++
++## Try the bridge on a phone
++
++1. Install Termux, and grant its storage permission.
++2. Extract `packaging/android/legacy-proxy/` to your accessible Downloads
++   folder. Run the `start-termux.sh` file with the **actual** server hostname:
++
++   ```sh
++   termux-setup-storage
++   bash ~/storage/downloads/legacy-proxy/start-termux.sh example.org:25565
++   ```
++
++   The path above is just an example: adjust it to the location where you
++   extracted the folder. Do not enter `example.org` literally.
++3. Configure ViaProxy authentication if the target is online-mode/premium.
++   In-game sign in with an authorized Minecraft account.
++4. Keep Termux running. In Horizon Android choose the `1.8.9 server - ViaProxy`
++   option on the Play page and tap Play. It uses the fixed, private loopback
++   port `127.0.0.1:25568`. The Termux helper also binds only to loopback.
++5. If anything fails, open Logs and record the disconnect text. Confirm your
++   actual server accepts the ViaProxy version. This flow has **not yet been
++   verified on a physical Android device**.
++
++> The optional helper requires Java in a *separate Termux app* to run ViaProxy.
++> The Horizon renderer, UI, launcher and native client remain in Rust.
++
++## Testing and Android build
++
++- `python3 -m unittest discover -s tests -p 'test_android*.py'`
++- `cargo test --locked -p horizon-protocol legacy_v1_8 --lib`
++- `cargo check --locked -p horizon-protocol --example legacy18_probe`
++- The full Android build uses `.github/workflows/android-dev.yml` after you
++  commit this source tree to an `android` or `main` branch in GitHub. Select
++  Actions > Android dev APKs > Run workflow, then download the ARM64 artifact.
++
++The first command can run locally without Rust. The two Cargo commands and
++Android build must run in an environment with Rust/NDK/JDK/Gradle; they were
++**not** executed in the file preparation environment.
++
++## Source reference / licensing
++
++UI hierarchy was studied from the user-supplied PojavLauncher 3 source tree,
++particularly `fragment_launcher.xml` and `activity_pojav_launcher.xml`. The
++resulting widgets were independently implemented using Horizon's existing Rust
++`Ui`/`HudBatch` APIs and assets. No PojavLauncher source code, images or fonts
++were included in the Horizon package. Keep Horizon's existing third-party
++licenses and notices for all dependencies.
+diff --git a/packaging/android/dev-builds.yml b/packaging/android/dev-builds.yml
+--- a/packaging/android/dev-builds.yml
++++ b/packaging/android/dev-builds.yml
+@@ -3,7 +3,7 @@
+ 
+ on:
+   push:
+-    branches: [android]
++    branches: [main, android]
+     paths:
+       - 'crates/**'
+       - 'Cargo.toml'
+@@ -33,7 +33,7 @@
+ jobs:
+   build:
+     # Never expose a signing secret to pull requests or arbitrary dispatch refs.
+-    if: github.ref == 'refs/heads/android'
++    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/android'
+     runs-on: ubuntu-24.04
+     timeout-minutes: 150
+     strategy:
+@@ -58,7 +58,9 @@
+           from pathlib import Path
+           value = os.environ.get('DEV_KEYSTORE', '')
+           if not value:
+-              raise SystemExit('Set ANDROID_DEV_KEYSTORE_BASE64 first; see docs/android-dev-builds.md')
++              print('No signing secret configured: android_build.py will generate a local CI signing key.\n'
++                    'APK updates from different CI runs will require uninstall/reinstall.')
++              raise SystemExit(0)
+           path = Path('.local/android/debug.keystore')
+           path.parent.mkdir(parents=True, exist_ok=True)
+           path.write_bytes(base64.b64decode(value, validate=True))
+@@ -130,12 +132,13 @@
+           for source, dest in [('LICENSE', 'LICENSE.txt'), ('THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_NOTICES.md')]:
+               shutil.copyfile(source, out / dest)
+           (out / 'BUILD.json').write_text(json.dumps({'commit': sha, 'abi': abi, 'profile': 'release',
+-              'package': 'dev.horizon.android.dev', 'experimental': True,
++              'package': 'dev.horizon.android.dev', 'experimental': True, 'protocol_47_login_foundation': True, 'protocol_47_play_supported': False,
+               'run': f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/actions/runs/{os.environ["GITHUB_RUN_ID"]}'}, indent=2) + '\n')
+           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a') as summary:
+               summary.write(f'### Dev APK: {abi}\n\nCommit: `{sha}`. Optimized release profile; experimental build.\n\n'
+                   'Download the APK artifact below. Installs separately from the stable app. '
+-                  'Existing worlds/accounts are not copied automatically.\n')
++                  'Existing worlds/accounts are not copied automatically.\n\n'
++                  '**Minecraft Java 1.8:** protocol 47 login foundation only; 1.8 gameplay is NOT supported by this APK yet.\n')
+           PY
+       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+         with:
+diff --git a/packaging/android/legacy-proxy/COMECE-AQUI-PTBR.txt b/packaging/android/legacy-proxy/COMECE-AQUI-PTBR.txt
+new file mode 100644
+--- /dev/null
++++ b/packaging/android/legacy-proxy/COMECE-AQUI-PTBR.txt
+@@ -0,0 +1,40 @@
++HORIZON ANDROID -> SERVIDOR JAVA 1.8.9
++====================================
++
++Esta é uma ponte de compatibilidade chamada ViaProxy, NÃO um APK de
++Horizon 1.8.9 independente. O Horizon continua rodando o motor 26.3;
++o proxy traduz a conexão para o servidor 1.8.9.
++
++Requisitos: Horizon Android instalado, Termux oficial (F-Droid/GitHub),
++conexão com a Internet, armazenamento disponível, memória suficiente.
++
++PASSO A PASSO NO CELULAR
++
++1. Extraia este ZIP (pasta horizon-189) para Downloads do celular.
++2. Abra Termux, digite termux-setup-storage, permita o acesso.
++3. Digite no Termux:
++
++   bash ~/storage/downloads/horizon-189/start-termux.sh SERVIDOR:25565
++
++   Troque SERVIDOR:25565 pelo IP/host e porta do seu servidor 1.8.9.
++4. No primeiro uso, o script instala Java 25 + bibliotecas, baixa
++   o ViaProxy oficial e configura a porta local. Acompanhe os logs.
++5. MANTENHA o Termux rodando. Abra o Horizon Android, Multiplayer,
++   Conexão Direta e entre no endereço: 127.0.0.1:25568
++6. Para encerrar o proxy, volte ao Termux e pressione Ctrl+C.
++
++Se o proxy não iniciar: copie a mensagem de erro do Termux para
++analisarmos. A execução real ainda não foi validada no celular.
++
++Servidores com conta premium/online-mode precisam de autenticação
++separada no ViaProxy usando a sua própria conta original.
++NÃO compartilhe senhas, tokens, saves.json ou credenciais com ninguém.
++
++Se o Android matar o Termux em segundo plano, desative a otimização
++de bateria desse app. Isso e o consumo de RAM podem impedir o uso
++simultâneo em celulares mais fracos.
++
++Fontes oficiais:
++https://github.com/ViaVersion/ViaProxy
++https://github.com/termux/termux-app
++https://github.com/Vasysik/horizon-android
+diff --git a/packaging/android/legacy-proxy/README.md b/packaging/android/legacy-proxy/README.md
+new file mode 100644
+--- /dev/null
++++ b/packaging/android/legacy-proxy/README.md
+@@ -0,0 +1,60 @@
++# Horizon Android 26.3 to Minecraft Java 1.8.9, via local ViaProxy
++
++**This is not a native 1.8.9 port or a standalone APK.** It is a pragmatic,
++third-party route to *try* multiplayer on a 1.8.9 server from the existing
++Horizon Android 26.3 app, without giving 1.8 packets to Horizon's new-format
++decoder.
++
++ViaProxy lists client versions 1.7.2–26.3 and server versions 1.0–26.3 as
++supported in its public project README, including their cross-product. It is
++third-party GPL-3.0 software, downloaded separately and kept outside Horizon.
++Source: https://github.com/ViaVersion/ViaProxy
++
++## Phone-only setup
++
++1. Download/install the official **Termux** app from F-Droid or its releases
++   on GitHub. The old Google Play version is not recommended.
++2. Download this helper ZIP to Android **Downloads** and extract it there.
++3. Open Termux and run:
++
++   ```bash
++   bash ~/storage/downloads/horizon-189/start-termux.sh mc.example.org:25565
++   ```
++
++   If `~/storage/downloads` is not available, first run `termux-setup-storage`
++   and grant access. You can also paste or copy this `.sh` into your Termux
++   home without storage permission.
++4. On first run the script installs Termux OpenJDK 25, curl and jq, then
++   downloads the latest **official** ViaProxy JAR from GitHub Releases, asks
++   ViaProxy to generate its own config, sets target `1.8.x` and binds it to
++   `127.0.0.1:25568`. Nothing is downloaded from unofficial mirrors.
++5. Keep Termux open, and in Horizon Android choose **Multiplayer → Direct
++   Connect → `127.0.0.1:25568`**. The proxy translates 26.3 ↔ 1.8.9.
++
++Stop the proxy with **Ctrl+C**. Re-run with another target to switch servers.
++Termux can be killed by Android battery management, so consider exempting
++Termux from battery optimization if it stops during play.
++
++## Online-mode/paid account servers
++
++This default configuration is intended for **offline-mode test servers**.
++Premium 1.8 servers often require ViaProxy to authenticate independently
++using the Minecraft account you own. Read ViaProxy's documented account
++commands and `auth-method: account` settings before attempting online mode.
++Never send your password, access tokens or `saves.json` to anyone or commit
++these to GitHub. Configure accounts locally through the officially supported
++ViaProxy flow; do not put credentials in this ZIP or scripts.
++
++## Limitations
++
++- The script and ViaProxy have not been run on the user's actual Android device.
++  Networking, account login, anticheat and mobile performance still need a
++  real-device test. This helper was checked for shell syntax only.
++- A current Java launcher and Java 26.3-capable Horizon build are required.
++  This does **not** switch Horizon's client physics/animation rules to 1.8.9;
++  server anticheat may reject some gameplay and PvP might feel modern.
++- ViaProxy and OpenJDK will consume extra RAM and disk space. On a phone with
++  4 GB RAM, running this alongside Horizon can cause Android to kill one app.
++- The helper intentionally listens only on `127.0.0.1`, not on public Wi-Fi.
++- A standalone 1.8.9 *Rust* gameplay client will require the native packet,
++  world and entity translation described in `docs/legacy-1.8-port.md`.
+diff --git a/packaging/android/legacy-proxy/start-termux.sh b/packaging/android/legacy-proxy/start-termux.sh
+new file mode 100644
+--- /dev/null
++++ b/packaging/android/legacy-proxy/start-termux.sh
+@@ -0,0 +1,100 @@
++#!/data/data/com.termux/files/usr/bin/bash
++# Horizon 26.3 -> ViaProxy -> Minecraft Java 1.8.9, all on the same phone.
++# This launcher is intentionally separate from Horizon's APK; no Java runtime
++# or third-party GPL binary is bundled with Horizon's native/MIT source.
++set -euo pipefail
++
++usage() {
++  cat <<'EOF'
++Usage: bash start-termux.sh <minecraft-1.8.9-server[:port]>
++Example: bash start-termux.sh mc.example.org:25565
++
++Run this in Termux from F-Droid/GitHub, not Android's generic shell.
++Requires internet for the first-time downloads (~150 MB+).
++The proxy remains in the foreground. Stop with Ctrl+C.
++After it reports Started, open Horizon Android -> Multiplayer ->
++Direct Connect -> 127.0.0.1:25568.
++
++IMPORTANT: Offline-mode backend servers are the first test target.
++Online-mode premium servers also require licensed Microsoft session
++credentials configured securely in ViaProxy; DO NOT paste a password here.
++EOF
++}
++if [[ $# -ne 1 || "$1" == "--help" || "$1" == "-h" ]]; then
++  usage
++  [[ $# -eq 1 && ( "$1" == "--help" || "$1" == "-h" ) ]] && exit 0 || exit 2
++fi
++TARGET=$1
++# Deliberately disallow shell escapes and unusual YAML characters in targets.
++if [[ ! "$TARGET" =~ ^[A-Za-z0-9_.-]+(:[0-9]{1,5})?$ ]]; then
++  echo "Invalid server address; use host.example.org[:25565]." >&2
++  exit 2
++fi
++if [[ "$TARGET" == 127.0.0.1* || "$TARGET" == localhost* ]]; then
++  echo "Refusing a loopback target; that would create a proxy loop." >&2
++  exit 2
++fi
++if [[ "${PREFIX:-}" != *"/com.termux/"* ]]; then
++  echo "This helper is intended for the official Termux Android environment." >&2
++  exit 2
++fi
++for package in curl jq openjdk-25; do
++  binary=$package
++  [[ "$package" == openjdk-25 ]] && binary=java
++  if ! command -v "$binary" >/dev/null 2>&1; then
++    echo "Installing Termux package $package..."
++    pkg install -y "$package"
++  fi
++done
++
++APP_DIR="$HOME/.local/share/horizon-189-proxy"
++mkdir -p "$APP_DIR"
++cd "$APP_DIR"
++if [[ ! -s ViaProxy.jar ]]; then
++  echo "Finding current official ViaProxy release..."
++  metadata=$(curl -fLsS --retry 3 --connect-timeout 20 \
++    -H 'Accept: application/vnd.github+json' \
++    'https://api.github.com/repos/ViaVersion/ViaProxy/releases/latest')
++  url=$(printf '%s' "$metadata" | jq -r \
++    '[.assets[] | select(.name | test("\\.jar$"; "i")) | select(.name | test("(java8|jdk8)"; "i") | not) | .browser_download_url][0] // empty')
++  if [[ -z "$url" || "$url" != https://github.com/ViaVersion/ViaProxy/releases/download/* ]]; then
++    echo "No official ViaProxy JAR found; download one manually from" >&2
++    echo "https://github.com/ViaVersion/ViaProxy/releases/latest" >&2
++    echo "and save it as $APP_DIR/ViaProxy.jar" >&2
++    exit 1
++  fi
++  curl -fL --retry 3 --connect-timeout 20 -o ViaProxy.jar.tmp "$url"
++  [[ -s ViaProxy.jar.tmp ]] || { echo 'Empty download' >&2; exit 1; }
++  mv ViaProxy.jar.tmp ViaProxy.jar
++fi
++
++if [[ ! -f viaproxy.yml ]]; then
++  echo 'Generating official ViaProxy config...'
++  java -Djava.awt.headless=true -Xmx256m -jar ViaProxy.jar config viaproxy.yml
++fi
++[[ -f viaproxy.yml ]] || { echo 'ViaProxy config was not created' >&2; exit 1; }
++
++# Update only these four keys; keep the ViaProxy-generated config defaults.
++# Restrict bind to localhost, so strangers on Wi-Fi cannot enter the proxy.
++awk -v target="$TARGET" '
++  BEGIN {seen_bind=0; seen_target=0; seen_ver=0; seen_auth=0}
++  /^bind-address:/       {print "bind-address: 127.0.0.1:25568"; seen_bind=1; next}
++  /^target-address:/     {print "target-address: " target; seen_target=1; next}
++  /^target-version:/     {print "target-version: 1.8.x"; seen_ver=1; next}
++  /^auth-method:/        {print; seen_auth=1; next}
++                         {print}
++  END {
++    if (!seen_bind) print "bind-address: 127.0.0.1:25568"
++    if (!seen_target) print "target-address: " target
++    if (!seen_ver) print "target-version: 1.8.x"
++    if (!seen_auth) print "auth-method: NONE"
++  }
++' viaproxy.yml > viaproxy.yml.tmp
++mv viaproxy.yml.tmp viaproxy.yml
++
++# DO NOT force auth-method back to NONE on every start: the user may have set
++# up an account in their PRIVATE config for authenticated servers.
++echo "Proxy local: 127.0.0.1:25568  ->  1.8.9 target: $TARGET"
++echo "Switch to Horizon Android and use 127.0.0.1:25568."
++echo 'Termux must remain running. Press Ctrl+C to stop.'
++exec java -Djava.awt.headless=true -Xms64m -Xmx384m -jar ViaProxy.jar start viaproxy.yml
+diff --git a/packaging/android/source-checks.yml b/packaging/android/source-checks.yml
+--- a/packaging/android/source-checks.yml
++++ b/packaging/android/source-checks.yml
+@@ -2,9 +2,9 @@
+ name: Android source checks
+ on:
+   push:
+-    branches: [android]
++    branches: [main, android]
+   pull_request:
+-    branches: [android]
++    branches: [main, android]
+   workflow_dispatch:
+     inputs:
+       native_checks:
+diff --git a/tests/test_android_launcher_bridge.py b/tests/test_android_launcher_bridge.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_android_launcher_bridge.py
+@@ -0,0 +1,40 @@
++"""Lightweight source integration assertions. Not a substitute for Rust/NDK builds."""
++import pathlib
++import unittest
++
++ROOT = pathlib.Path(__file__).resolve().parents[1]
++ANDROID = ROOT / "crates/horizon-client/src/android"
++
++
++class BridgeLauncherWiringTests(unittest.TestCase):
++    def test_mode_is_persisted_and_defaults_to_native(self):
++        catalog = (ANDROID / "catalog.rs").read_text()
++        for expected in ["pub runtime: RuntimeMode", "#[serde(rename_all =", "#[default]", "Native26_3", "Legacy1_8_9ViaProxy"]:
++            self.assertIn(expected, catalog)
++
++    def test_bridge_uses_fixed_loopback_not_arbitrary_target(self):
++        bridge = (ANDROID / "legacy_bridge.rs").read_text()
++        self.assertIn('pub const LOOPBACK: &str = "127.0.0.1:25568"', bridge)
++        self.assertIn('TcpStream::connect_timeout', bridge)
++        self.assertIn('RuntimeMode::Legacy1_8_9ViaProxy => LOOPBACK.to_string()', bridge)
++
++    def test_selection_is_connected_to_actual_native_launch(self):
++        launcher = (ANDROID / "launcher.rs").read_text()
++        pages = (ANDROID / "launcher_pages.rs").read_text()
++        main = (ROOT / "crates/horizon-client/src/android_main.rs").read_text()
++        self.assertIn('crate::legacy_bridge::check(self.catalog.config.runtime)', launcher)
++        self.assertIn('crate::legacy_bridge::server(', launcher)
++        self.assertIn('self.catalog.config.runtime.next()', pages)
++        self.assertIn('Action::ToggleRuntime', pages)
++        self.assertIn('mod legacy_bridge;', main)
++
++    def test_native_ui_has_pojav_style_home(self):
++        pages = (ANDROID / "launcher_pages.rs").read_text()
++        for label in ['Action::ToggleDrawer', 'Action::CloseDrawer', '"Minecraft Java Edition"', '"PLAY"', '"Files"', '"Logs"']:
++            self.assertIn(label, pages)
++        self.assertIn('pub(super) fn draw_pages', pages)
++        self.assertNotIn('PojavLauncherActivity', pages)
++
++
++if __name__ == '__main__':
++    unittest.main()
+diff --git a/tests/test_legacy_proxy_helper.py b/tests/test_legacy_proxy_helper.py
+new file mode 100644
+--- /dev/null
++++ b/tests/test_legacy_proxy_helper.py
+@@ -0,0 +1,86 @@
++#!/usr/bin/env python3
++"""Offline tests: ViaProxy Termux shell launcher, config edits and input safety.
++
++Never download or run third-party JARs from CI while testing this helper.
++"""
++import os
++import pathlib
++import subprocess
++import tempfile
++import unittest
++
++ROOT = pathlib.Path(__file__).resolve().parents[1]
++SCRIPT = ROOT / 'packaging/android/legacy-proxy/start-termux.sh'
++
++
++class TermuxHelperTests(unittest.TestCase):
++    def setUp(self):
++        self._tmp = tempfile.TemporaryDirectory()
++        self.addCleanup(self._tmp.cleanup)
++        root = pathlib.Path(self._tmp.name)
++        stub = root / 'bin'
++        stub.mkdir()
++        home = root / 'home'
++        home.mkdir()
++        self.cfgdir = home / '.local/share/horizon-189-proxy'
++        self.cfgdir.mkdir(parents=True)
++        (self.cfgdir / 'ViaProxy.jar').write_text('offline test placeholder')
++        (self.cfgdir / 'viaproxy.yml').write_text(
++            'bind-address: 0.0.0.0:25568\n'
++            'target-address: example.org:25565\n'
++            'target-version: 1.21.11\n'
++            'auth-method: NONE\n'
++            'proxy-online-mode: false\n'
++        )
++        for binary, script in {
++            'java': '#!/bin/sh\nprintf "java called: %s\\n" "$*"\n',
++            'curl': '#!/bin/sh\nexit 0\n',
++            'jq': '#!/bin/sh\nexit 0\n',
++        }.items():
++            executable = stub / binary
++            executable.write_text(script)
++            executable.chmod(0o755)
++        self.env = {
++            **os.environ,
++            'HOME': str(home),
++            'PATH': f'{stub}{os.pathsep}{os.environ.get("PATH", "")}',
++            'PREFIX': '/data/data/com.termux/files/usr',
++        }
++
++    def call(self, *args):
++        return subprocess.run(
++            ['bash', str(SCRIPT), *args], capture_output=True, text=True,
++            env=self.env, timeout=10, check=False,
++        )
++
++    def test_updates_three_fields_without_leaking_bind(self):
++        result = self.call('mc.example.org:25565')
++        self.assertEqual(result.returncode, 0, result.stderr)
++        cfg = (self.cfgdir / 'viaproxy.yml').read_text()
++        self.assertIn('bind-address: 127.0.0.1:25568\n', cfg)
++        self.assertIn('target-address: mc.example.org:25565\n', cfg)
++        self.assertIn('target-version: 1.8.x\n', cfg)
++        self.assertIn('auth-method: NONE\n', cfg)
++        self.assertIn('proxy-online-mode: false\n', cfg)
++        self.assertIn('start viaproxy.yml', result.stdout)
++
++    def test_rejects_shell_and_yaml_injection(self):
++        for address in ('bad;echo unsafe', '127.0.0.1:25568', 'abc\nport: 9', 'localhost'):
++            with self.subTest(address=address):
++                self.assertNotEqual(self.call(address).returncode, 0)
++
++    def test_preserves_account_authentication_setting(self):
++        cfg = self.cfgdir / 'viaproxy.yml'
++        cfg.write_text(cfg.read_text().replace('auth-method: NONE', 'auth-method: account'))
++        self.assertEqual(self.call('another.example.net').returncode, 0)
++        self.assertIn('auth-method: account\n', cfg.read_text())
++
++    def test_help_does_not_start_java(self):
++        result = self.call('--help')
++        self.assertEqual(result.returncode, 0)
++        self.assertIn('Usage:', result.stdout)
++        self.assertNotIn('java called', result.stdout)
++
++
++if __name__ == '__main__':
++    unittest.main()
