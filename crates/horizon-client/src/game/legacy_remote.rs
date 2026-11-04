@@ -458,6 +458,9 @@ impl Game<'_> {
             let position=play::BlockPosition{
                 x:hit.pos[0],y:hit.pos[1],z:hit.pos[2]
             };
+            if legacy.mining.is_some_and(|old|old.pos==position&&old.face==face) {
+                return true;
+            }
             let next=LegacyMining{pos:position,face,progress:0.0};
             if let Some(previous)=legacy.mining.take() {
                 if previous.pos!=position {
