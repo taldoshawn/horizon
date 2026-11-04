@@ -35,6 +35,8 @@ pub enum ClientAction<'a> {
     SwingArm,
     SelectHotbar(u8),
     Dig { status:u8, position:play::BlockPosition, face:u8 },
+    Place {position:play::BlockPosition,face:u8,
+        item:Option<&'a inventory::ItemStack>,cursor:[u8;3]},
     BlockSword(Option<&'a inventory::ItemStack>),
     ReleaseSword,
     Click { click: inventory::Click, item:Option<&'a inventory::ItemStack> },
@@ -67,6 +69,9 @@ impl ClientAction<'_> {
             Self::SwingArm=>Ok(play::swing_arm_body()),
             Self::SelectHotbar(slot)=>inventory::held_item_change_body(slot),
             Self::Dig{status,position,face}=>play::digging_body(status,position,face),
+            Self::Place{position,face,item,cursor}=>{
+                play::place_block_body(position,face,item,cursor)
+            },
             Self::BlockSword(item)=>play::sword_block_body(item),
             Self::ReleaseSword=>Ok(play::release_use_item_body()),
             Self::Click{click,item}=>inventory::click_window_body(click,item),
