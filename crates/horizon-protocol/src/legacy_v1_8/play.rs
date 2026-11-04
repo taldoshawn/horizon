@@ -461,6 +461,27 @@ pub fn digging_body(status: u8, position: BlockPosition, face: u8) -> Result<Vec
 /// Serverbound 0x0a: swing arm (without a modern hand enum).
 pub fn swing_arm_body() -> Vec<u8> { vec![0x0a] }
 
+
+/// C08 in 1.8: right-click sword in air for blocking. This predates the
+/// dual-wield/hand enum; the sentinel position is (-1,-1,-1), face 255.
+/// The held item is a legacy NBT Slot, not a modern data-component item.
+pub fn sword_block_body(item:Option<&super::inventory::ItemStack>)->Result<Vec<u8>> {
+    let mut w=Writer::new();
+    w.varint(0x08);
+    w.i64(-1); // Sentinel: all 64 packed position bits set.
+    w.u8(255);
+    super::inventory::write_slot(&mut w,item)?;
+    w.u8(0);w.u8(0);w.u8(0);
+    Ok(w.data)
+}
+
+/// C07 release item use: status=5 with an unused BlockPos and face.
+pub fn release_use_item_body()->Vec<u8>{
+    let mut w=Writer::new();
+    w.varint(0x07);w.u8(5);w.i64(0);w.u8(0);
+    w.data
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
