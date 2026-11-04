@@ -39,6 +39,7 @@ pub(super) struct NativeLegacy {
     motion: ClassicPlayer,
     last_sprint:bool,
     last_sneak:bool,
+    last_selected:u8,
 }
 impl NativeLegacy {
     fn biome_map(biomes:&horizon_client::biome::Biomes)->[u16;256] {
@@ -91,6 +92,7 @@ impl NativeLegacy {
             motion:ClassicPlayer::new(0.0,64.0,0.0),
             last_sprint:false,
             last_sneak:false,
+            last_selected:0,
         }
     }
 }
@@ -292,7 +294,7 @@ impl Game<'_> {
             let Some(worker)=&legacy.worker else{return Ok(())};
             for event in worker.poll(){
                 let packet=worker.apply(event,&mut legacy.state)?;
-                if packet.kind==UpdateKind::Joined {
+                if matches!(packet.kind,UpdateKind::Joined|UpdateKind::Respawn) {
                     self.reset_legacy_world();
                     self.player=None;
                     if let Some(j)=&legacy.state.join {
@@ -300,6 +302,31 @@ impl Game<'_> {
                             -1=>Dim::Nether,1=>Dim::End,_=>Dim::Overworld,
                         };
                         self.set_mode_id(j.game_mode as i32);
+                    }
+                }
+                if packet.kind==UpdateKind::Health {
+                    let h=legacy.state.health;
+                    if let Some(player)=self.player.as_mut() {
+                        player.set_health(h.health.max(0.0),false)?;
+                        player.health.food.food=h.food;
+                        player.health.food.saturation=h.saturation;
+                    }
+                    if h.health<=0.0&&self.player.is_some() {
+                        self.screen=Screen::Dead;
+                        self.capture(false);
+                    }
+                }
+                if packet.kind==UpdateKind::Hotbar {
+                    self.selected=usize::from(legacy.state.selected_slot);
+                    legacy.last_selected=legacy.state.selected_slot;
+                }
+                if packet.id==0x12 {
+                    let velocity=play::decode_entity_velocity(&packet.payload)?;
+                    if legacy.state.join.as_ref().is_some_and(|j|j.entity_id==velocity.entity_id) {
+                        legacy.motion.apply_server_velocity(velocity.x,velocity.y,velocity.z)?;
+                        if let Some(p)=self.player.as_mut() {
+                            p.velocity=Vec3::new(velocity.x,velocity.y,velocity.z);
+                        }
                     }
                 }
                 if packet.kind==UpdateKind::PlayerCorrected {
@@ -430,6 +457,24 @@ impl Game<'_> {
         let Some(legacy)=self.legacy_remote.as_mut() else{return Ok(())};
         if self.player.is_none(){return Ok(())}
         let Some(worker)=legacy.worker.as_ref() else{return Ok(())};
+        if let Ok(slot)=u8::try_from(self.selected) {
+            if slot<=8 && slot!=legacy.last_selected {
+                worker.send_action(ClientAction::SelectHotbar(slot))?;
+                legacy.last_selected=slot;
+            }
+        }
+        // Holding right-click with a 1.8 sword blocks instead of activating
+        // 26.3 dual-wield/shield behavior. Forge/old items require an adapter.
+        let chosen=legacy.state.windows.get(&0).and_then(|w|
+            w.slots.get(36+self.selected)).and_then(|s|s.as_ref());
+        let has_sword=chosen.is_some_and(|s|
+            matches!(s.numeric_id,267|268|272|276|283));
+        let should_block=playing&&self.right&&has_sword;
+        if should_block!=legacy.motion.using_sword {
+            if should_block {worker.send_action(ClientAction::BlockSword(chosen))?;}
+            else {worker.send_action(ClientAction::ReleaseSword)?;}
+            legacy.motion.using_sword=should_block;
+        }
         let movement=keys.direction();
         // The old network state, not a modern 26.3 registry, supplies
         // collision blocks. The exact historic block-shape table still needs
