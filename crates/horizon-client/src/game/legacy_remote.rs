@@ -46,6 +46,29 @@ fn old_face(face:[i32;3])->Option<u8> {
     }
 }
 
+/// Approximation of vanilla 1.8 harvest speed for classic tool IDs; a
+/// dedicated historical item registry is still required for exact levels,
+/// enchantments, effects and custom Forge blocks.
+fn old_tool_speed(item:Option<i16>,block:u16)->f32 {
+    let pick=matches!(block,1|4|14|15|16|21|22|24|41|42|43|44|45|
+        48|49|52|56|57|61|62|66|67|71|73|74|79|87|89|98|101|
+        108|109|112|113|114|116|121|123|124|125|126|128|129|133|
+        139|145|152|153|155|156|159|172|173|174|179|180|181|182);
+    let axe=matches!(block,5|17|18|47|53|54|58|63|64|68|72|85|86|
+        91|96|99|100|107|125|126|134|135|136|143|146|162|163|
+        164|170|180|181|182);
+    let shovel=matches!(block,2|3|12|13|60|78|80|82|88|110|159|172|208);
+    match item {
+        Some(270) if pick|Some(271) if axe|Some(269) if shovel=>2.0,
+        Some(274) if pick|Some(275) if axe|Some(273) if shovel=>4.0,
+        Some(257) if pick|Some(258) if axe|Some(256) if shovel=>6.0,
+        Some(278) if pick|Some(279) if axe|Some(277) if shovel=>8.0,
+        Some(285) if pick|Some(286) if axe|Some(284) if shovel=>12.0,
+        Some(359) if matches!(block,18|31|35|106|161|175)=>15.0, // Shears
+        _=>1.0,
+    }
+}
+
 pub(super) struct NativeLegacy {
     connecting: Option<Receiver<std::result::Result<LegacyWireWorker, String>>>,
     worker: Option<LegacyWireWorker>,
@@ -534,6 +557,19 @@ impl Game<'_> {
             jump:held(KeyCode::Space),shift:held(KeyCode::ShiftLeft),
             sprint:held(KeyCode::ControlLeft),analog:None,
         }.with_stick(stick.filter(|_|playing));
+        // Raycast and old-state hardness before taking the mutable 1.8
+        // session. Modern hardness is only a fallback for this unreleased
+        // engine: this cannot replace complete vanilla 1.8 mining parity.
+        let mining_hit=if playing&&self.left {self.pick()} else {None};
+        let mining_hardness=mining_hit.and_then(|hit|{
+            let state=self.legacy_remote.as_ref()?;
+            let (old_block,meta)=state.state.block(hit.pos[0],hit.pos[1],hit.pos[2])?;
+            if old_block==0 || old_block>255{return None;}
+            let packed=(old_block<<4)|u16::from(meta);
+            let runtime=state.renderer.block_map.renderer_state(packed);
+            let properties=self.res.facts().get(horizon_world::registry::BlockStateId(runtime));
+            Some((hit.pos,old_block,properties.hardness,properties.requires_tool))
+        });
         let Some(legacy)=self.legacy_remote.as_mut() else{return Ok(())};
         if self.player.is_none(){return Ok(())}
         let Some(worker)=legacy.worker.as_ref() else{return Ok(())};
@@ -554,6 +590,33 @@ impl Game<'_> {
             if should_block {worker.send_action(ClientAction::BlockSword(chosen))?;}
             else {worker.send_action(ClientAction::ReleaseSword)?;}
             legacy.motion.using_sword=should_block;
+        }
+        if let Some(mut digging)=legacy.mining.take(){
+            let same=mining_hardness.is_some_and(|(pos,..)|{
+                pos==[digging.pos.x,digging.pos.y,digging.pos.z]
+            });
+            if !same {
+                worker.send_action(ClientAction::Dig{
+                    status:1,position:digging.pos,face:digging.face
+                })?;
+            }else if let Some((_,id,hardness,needs_tool))=mining_hardness {
+                let item_id=chosen.map(|item|item.numeric_id);
+                let speed=old_tool_speed(item_id,id);
+                let can_harvest=!needs_tool || speed>1.0;
+                let divisor=if can_harvest {30.0}else{100.0};
+                if hardness>=0.0&&hardness.is_finite(){
+                    let fraction=if hardness<=0.0 {1.0}
+                        else {speed/(hardness*divisor)};
+                    digging.progress+=fraction;
+                    if digging.progress>=1.0 {
+                        worker.send_action(ClientAction::Dig{
+                            status:2,position:digging.pos,face:digging.face
+                        })?;
+                    }else{
+                        legacy.mining=Some(digging);
+                    }
+                }
+            }
         }
         let movement=keys.direction();
         // The old network state, not a modern 26.3 registry, supplies
