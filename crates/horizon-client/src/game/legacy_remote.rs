@@ -175,9 +175,10 @@ impl Game<'_> {
     /// Developer-only switch. A plain Android version selector remains on
     /// the existing public implementation until native 1.8.9 is actually
     /// playable and benchmarked.
-    pub(super) fn native_189_requested()->bool {
+    pub(super) fn native_189_requested(&self)->bool {
+        if self.options.native_189 { return true; }
         #[cfg(target_os="android")]
-        { return ANDROID_NATIVE_189.load(std::sync::atomic::Ordering::Acquire); }
+        { ANDROID_NATIVE_189.load(std::sync::atomic::Ordering::Acquire) }
         #[cfg(not(target_os="android"))]
         { std::env::var("HORIZON_NATIVE_189_DEV").ok().as_deref()==Some("1") }
     }
