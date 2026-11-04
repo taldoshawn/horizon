@@ -1,0 +1,28 @@
+name: Rust protocol 1.8.9 checks
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/horizon-protocol/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/rust-legacy-18.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  protocol-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up pinned Rust toolchain
+        run: rustup show
+      - name: Check protocol 1.8.9 Rust tests
+        run: cargo test -p horizon-protocol --lib legacy_v1_8 -- --nocapture
+      - name: Check protocol probe build
+        run: cargo check -p horizon-protocol --example legacy18_probe
