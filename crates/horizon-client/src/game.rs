@@ -249,6 +249,11 @@ mod raids;
 mod recipe_book;
 mod remote;
 mod legacy_remote;
+#[cfg(target_os = "android")]
+pub(crate) fn android_native_189_mode(enabled:bool) {
+    legacy_remote::set_android_native_189(enabled);
+}
+
 mod remote_camera;
 mod remote_chat;
 mod remote_chunks;
