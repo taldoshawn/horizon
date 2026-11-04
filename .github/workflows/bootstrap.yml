@@ -50,16 +50,17 @@ jobs:
           rsync -a \
             --exclude='.git/' \
             --exclude='README.md' \
+            --exclude='.github/workflows/' \
             --exclude='.github/workflows/bootstrap.yml' \
             "$RUNNER_TEMP/horizon-original/" ./
 
-          git apply --check patches/horizon-android-189-pojav.patch
-          git apply patches/horizon-android-189-pojav.patch
+          git apply --check --exclude='.github/workflows/*' patches/horizon-android-189-pojav.patch
+          git apply --exclude='.github/workflows/*' patches/horizon-android-189-pojav.patch
 
           test -f Cargo.toml
           test -f crates/horizon-protocol/src/legacy_v1_8/play.rs
           test -f crates/horizon-client/src/android/legacy_bridge.rs
-          test -f .github/workflows/android-dev.yml
+          test -f .github/workflows/bootstrap.yml
 
           python3 -m unittest discover -s tests -p 'test_android*.py'
 
