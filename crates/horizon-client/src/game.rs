@@ -4099,6 +4099,9 @@ impl Game<'_> {
         self.process_level_events()
     }
     fn attack_block(&mut self, pos: [i32; 3]) -> Result<()> {
+        if self.legacy_remote.is_some() {
+            return Ok(());
+        }
         let note = self.with_level(|b, level, ticks| {
             b.attack_block(level, ticks, BlockPos::new(pos[0], pos[1], pos[2]))
         });
@@ -5399,6 +5402,11 @@ impl Game<'_> {
         self.stats.add("used", &stack.item, 1);
     }
     fn break_block(&mut self, pos: [i32; 3]) -> Result<()> {
+        if self.legacy_remote.is_some() {
+            // A native old-server block break needs C07/C08 actions, not
+            // the modern local Level.setBlock + loot/save mechanics.
+            return Ok(());
+        }
         self.lan_break_pos = Some(pos);
         let broken = self.with_player_actor(|game| game.break_block_as_player(pos));
         self.lan_break_pos = None;
@@ -5719,6 +5727,11 @@ impl Game<'_> {
     /// One hand's turn in `startUseItem`: `useItemOn` the block aimed at,
     /// then `useItem`. Whether the click ends here (it acted or failed).
     fn use_hand(&mut self, block_hit: Option<&Hit>) -> Result<bool> {
+        // The 26.3 item/block interaction code is never authoritative on a
+        // protocol-47 server. Its inventory IDs and block states are wrong.
+        if self.legacy_remote.is_some() {
+            return Ok(false);
+        }
         self.use_failed = false;
         // isSecondaryUseActive with something in either hand keeps blocks
         // from reacting.
@@ -11064,6 +11077,9 @@ impl Game<'_> {
     }
     /// Player.attack with the attack-strength charge, crits and knockback.
     fn attack(&mut self) -> bool {
+        if self.legacy_remote.is_some() {
+            return self.native_189_attack();
+        }
         if self.spectator() {
             return false;
         }
