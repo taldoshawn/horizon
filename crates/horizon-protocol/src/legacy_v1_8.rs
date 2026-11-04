@@ -16,6 +16,7 @@ pub mod world;
 pub mod state;
 pub mod physics;
 pub mod superflat;
+pub mod spawn;
 
 use std::time::Duration;
 
