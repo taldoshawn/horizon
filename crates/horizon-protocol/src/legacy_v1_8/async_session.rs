@@ -73,6 +73,7 @@ impl LegacyWireWorker {
             writer.shutdown();
         }).map_err(|e|Error::new(format!("spawn 1.8 writer: {e}")))?;
 
+        let rx_commands=commands_tx.clone();
         thread::Builder::new().name("legacy18-rx".into()).spawn(move || {
             loop {
                 let (id,payload)=match reader.recv(){
@@ -87,7 +88,7 @@ impl LegacyWireWorker {
                 // Keepalives must not wait for the renderer or Android GC.
                 match keep_alive_id(id,&payload){
                     Ok(Some(value))=>{
-                        if commands_tx.send(keep_alive_response_body(value)).is_err(){break;}
+                        if rx_commands.send(keep_alive_response_body(value)).is_err(){break;}
                     },
                     Ok(None)=>{},
                     Err(error)=>{
