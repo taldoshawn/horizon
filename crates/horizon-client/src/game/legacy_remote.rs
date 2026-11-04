@@ -78,6 +78,85 @@ fn old_tool_speed(item:Option<i16>,block:u16)->f32 {
     } else {1.0}
 }
 
+/// 1.8 numeric item + metadata into the installed renderer's visual item.
+/// This does NOT rewrite the server's item, count, NBT or click identity.
+/// Some item names have been flattened since 1.8. Unknown modded IDs remain
+/// server-owned and are not displayed as a fabricated vanilla replacement.
+fn old_item_visual_name(id:i16,damage:i16)->Option<String> {
+    let old=horizon_world::datafix::legacy_item_name(id)?;
+    let metadata=usize::try_from(damage).ok()?;
+    let variant=match id {
+        1=>["stone","granite","polished_granite","diorite",
+            "polished_diorite","andesite","polished_andesite"].get(metadata).copied(),
+        3=>["dirt","coarse_dirt","podzol"].get(metadata).copied(),
+        5|6=>{
+            ["oak","spruce","birch","jungle","acacia","dark_oak"].get(metadata)
+                .map(|wood|if id==5{format!("{wood}_planks")}else{format!("{wood}_sapling")})
+                .as_deref().map(str::to_owned)
+                .map(|_|"") // handled below without a dangling temporary
+                .filter(|_|false)
+        },
+        35=>["white_wool","orange_wool","magenta_wool","light_blue_wool",
+            "yellow_wool","lime_wool","pink_wool","gray_wool","light_gray_wool",
+            "cyan_wool","purple_wool","blue_wool","brown_wool","green_wool",
+            "red_wool","black_wool"].get(metadata).copied(),
+        263 if metadata==1=>Some("charcoal"),
+        322 if metadata==1=>Some("enchanted_golden_apple"),
+        _=>None,
+    };
+    if let Some(variant)=variant {return Some(format!("minecraft:{variant}"));}
+    if matches!(id,5|6) {
+        let wood=["oak","spruce","birch","jungle","acacia","dark_oak"]
+            .get(metadata).copied()?;
+        return Some(format!("minecraft:{wood}_{}",
+            if id==5{"planks"}else{"sapling"}));
+    }
+    let changed=match old {
+        "minecraft:grass"=>"minecraft:grass_block",
+        "minecraft:planks"=>"minecraft:oak_planks",
+        "minecraft:log"=>"minecraft:oak_log",
+        "minecraft:log2"=>"minecraft:acacia_log",
+        "minecraft:leaves"=>"minecraft:oak_leaves",
+        "minecraft:leaves2"=>"minecraft:acacia_leaves",
+        "minecraft:wool"=>"minecraft:white_wool",
+        "minecraft:stained_hardened_clay"=>"minecraft:white_terracotta",
+        "minecraft:hardend_clay"|"minecraft:hardened_clay"=>"minecraft:terracotta",
+        "minecraft:mob_spawner"=>"minecraft:spawner",
+        "minecraft:lit_pumpkin"=>"minecraft:jack_o_lantern",
+        "minecraft:golden_rail"=>"minecraft:powered_rail",
+        "minecraft:web"=>"minecraft:cobweb",
+        "minecraft:wooden_door"=>"minecraft:oak_door",
+        "minecraft:wooden_sword"=>"minecraft:wooden_sword",
+        "minecraft:stone_slab"=>"minecraft:stone_slab",
+        "minecraft:stonebrick"=>"minecraft:stone_bricks",
+        "minecraft:skull"=>"minecraft:skeleton_skull",
+        "minecraft:reeds"=>"minecraft:sugar_cane",
+        "minecraft:boat"=>"minecraft:oak_boat",
+        "minecraft:fish"=>"minecraft:cod",
+        "minecraft:cooked_fish"=>"minecraft:cooked_cod",
+        "minecraft:melon"=>"minecraft:melon_slice",
+        "minecraft:waterlily"=>"minecraft:lily_pad",
+        "minecraft:yellow_flower"=>"minecraft:dandelion",
+        "minecraft:red_flower"=>"minecraft:poppy",
+        "minecraft:tallgrass"=>"minecraft:short_grass",
+        _=>old,
+    };
+    Some(changed.to_string())
+}
+
+fn old_stack_visual(
+    item:&horizon_protocol::legacy_v1_8::inventory::ItemStack,
+    known:&horizon_client::items::Items,
+)->Option<ItemStack> {
+    let name=old_item_visual_name(item.numeric_id,item.damage)?;
+    if !known.items.contains_key(name.as_str()) {return None;}
+    Some(ItemStack {
+        item:Arc::from(name.as_str()),count:u32::from(item.count),
+        damage:u32::from(item.damage.max(0) as u16),
+        extra:None,
+    })
+}
+
 pub(super) struct NativeLegacy {
     connecting: Option<Receiver<std::result::Result<LegacyWireWorker, String>>>,
     worker: Option<LegacyWireWorker>,
@@ -322,6 +401,27 @@ impl Game<'_> {
         }
         Ok(())
     }
+    /// Server WindowItems (0x30) and SetSlot (0x2f): map 1.8 window 0
+    /// 5..8 armour, 9..35 main slots, 36..44 hotbar. Server numeric item IDs
+    /// are kept in LegacyGame for click/placement packets.
+    fn sync_native_189_inventory(&mut self,state:&LegacyGame) {
+        let Some(window)=state.windows.get(&0) else {return;};
+        let known=self.res.items();
+        for target in 0..36usize {
+            let source=if target<9 {36+target} else {target};
+            self.inventory[target]=window.slots.get(source)
+                .and_then(|slot|slot.as_ref())
+                .and_then(|item|old_stack_visual(item,known));
+        }
+        for index in 0..4usize {
+            self.armor[index]=window.slots.get(5+index)
+                .and_then(|slot|slot.as_ref())
+                .and_then(|item|old_stack_visual(item,known));
+        }
+        self.carried=state.cursor.as_ref().and_then(|item|old_stack_visual(item,known));
+        // There is no 1.8 offhand or modern data-component inventory.
+        self.offhand=None;
+    }
     pub(super) fn poll_native_189(&mut self)->Result<()> {
         let Some(mut legacy)=self.legacy_remote.take() else{return Ok(());};
         let result=(||->Result<()>{
@@ -353,6 +453,9 @@ impl Game<'_> {
                         };
                         self.set_mode_id(j.game_mode as i32);
                     }
+                }
+                if packet.kind==UpdateKind::Inventory {
+                    self.sync_native_189_inventory(&legacy.state);
                 }
                 if packet.kind==UpdateKind::Health {
                     let h=legacy.state.health;
