@@ -200,6 +200,30 @@ mod tests {
     }
 
     #[test]
+    fn server_disconnect_reason_is_reported() {
+        let listener=TcpListener::bind("127.0.0.1:0").unwrap();
+        let address=listener.local_addr().unwrap();
+        let server=thread::spawn(move||{
+            let (socket,_)=listener.accept().unwrap();
+            let mut connection=Connection::from_stream(socket).unwrap();
+            connection.recv().unwrap(); // 1.8 client settings
+            connection.recv().unwrap(); // MC|Brand
+            let mut disconnect=Writer::new();
+            disconnect.varint(0x40);
+            disconnect.string(r#"{"text":"Server closed"}"#);
+            connection.send(&disconnect.data).unwrap();
+        });
+        let socket=std::net::TcpStream::connect(address).unwrap();
+        let connection=Connection::from_stream(socket).unwrap();
+        let mut client=LegacySession::from_logged_in_connection(
+            connection,"Steve".into(),"test-uuid".into()
+        ).unwrap();
+        let error=client.receive_one().unwrap_err();
+        assert!(error.to_string().contains("Server closed"));
+        server.join().unwrap();
+    }
+
+    #[test]
     fn network_worker_acks_server_and_sends_touch_actions() {
         let listener=TcpListener::bind("127.0.0.1:0").unwrap();
         let address=listener.local_addr().unwrap();
